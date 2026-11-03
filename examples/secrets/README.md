@@ -30,6 +30,12 @@ docker compose up -d --build
 
 `secrets/` is gitignored — never commit real tokens.
 
+`multica login` may rewrite `workspace_id` to the token's default workspace.
+The entrypoint re-pins after login from (in order): env `MULTICA_WORKSPACE`
+(or `MULTICA_WORKSPACE_ID`) → projected `config.json` `.workspace_id` → leave
+login default. Prefer a slug in env (e.g. `MULTICA_WORKSPACE=fuel-labs`) so
+GitOps need not bake UUIDs.
+
 ## Kubernetes
 
 See [`examples/k8s/`](../k8s/) for a Deployment that projects the same keys to
