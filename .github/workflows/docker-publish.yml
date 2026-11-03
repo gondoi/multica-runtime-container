@@ -1,0 +1,114 @@
+# Multi-arch publish to ghcr.io/gondoi/multica-runtime.
+# Contract: workflow_dispatch + pin-file main + v* tags; semver + sha-<12>; no latest.
+name: Build and publish
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+    paths:
+      - Dockerfile
+      - entrypoint.sh
+      - bin/**
+      - .dockerignore
+      - .github/workflows/docker-publish.yml
+
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      sha_tag: ${{ steps.meta.outputs.sha_tag }}
+    steps:
+      - id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "sha_tag=sha-${GITHUB_SHA:0:12}" >> "$GITHUB_OUTPUT"
+
+  docker:
+    needs: prepare
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: FuelLabs/github-actions/.github/workflows/docker-build-push.yml@c2b9e5cd3e20180538f1b2d2841636e85eddfab4
+    with:
+      auth-mode: registry-login
+      registry: ghcr.io
+      dockerfile: Dockerfile
+      docker-context: .
+      image: ghcr.io/gondoi/multica-runtime
+      build-backend: native
+      platforms: linux/amd64,linux/arm64
+      runs-on: ubuntu-latest
+      runs-on-amd64: ubuntu-latest
+      runs-on-arm64: ubuntu-24.04-arm
+      flavor: |
+        latest=false
+      labels: |
+        org.opencontainers.image.source=https://github.com/${{ github.repository }}
+        org.opencontainers.image.description=Multica runtime home-base (thin agent daemon image)
+      tags: |
+        type=ref,event=tag
+        type=semver,pattern={{raw}}
+        type=semver,pattern={{version}}
+        type=raw,value=${{ needs.prepare.outputs.sha_tag }}
+    secrets:
+      REGISTRY_USERNAME: ${{ github.repository_owner }}
+      REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+
+  # GITHUB_TOKEN publishes packages as private by default for a private source repo.
+  # Contract requires anonymous GHCR pull — flip visibility after push.
+  make-public:
+    needs: docker
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      packages: write
+    steps:
+      - name: Set ghcr.io/gondoi/multica-runtime visibility to public
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh api --method PUT \
+            -H "Accept: application/vnd.github+json" \
+            "/user/packages/container/multica-runtime/visibility" \
+            -f visibility=public
+
+  smoke:
+    needs: [prepare, docker, make-public]
+    if: always() && needs.docker.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      packages: read
+      contents: read
+    steps:
+      - name: Login to GHCR (needed if package still private)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull published tag and assert baseline binaries
+        env:
+          IMAGE: ghcr.io/gondoi/multica-runtime:${{ needs.prepare.outputs.sha_tag }}
+        run: |
+          set -euo pipefail
+          docker pull "$IMAGE"
+          docker run --rm --entrypoint /bin/bash "$IMAGE" -lc \
+            'command -v multica cursor-agent asdf git ssh jq curl tini'
+          echo "smoke ok: $IMAGE"

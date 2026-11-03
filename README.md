@@ -4,7 +4,22 @@ Thin container image for a **[Multica](https://multica.ai) agent runtime home-ba
 
 It boots a Multica daemon with Cursor as the v1 agent CLI, persists workspaces on a volume, and relies on Multica **lazy** `repo checkout` for source — no consumer monorepos are baked into the image.
 
-Published image (when CI is wired): `ghcr.io/gondoi/multica-runtime`.
+Published image: `ghcr.io/gondoi/multica-runtime` (public GHCR, anonymous pull).
+
+### CI publish
+
+GitHub Actions (`.github/workflows/docker-publish.yml`) builds **linux/amd64 + linux/arm64** via `FuelLabs/github-actions` `docker-build-push` and pushes pin-friendly tags only (no `latest`):
+
+| Trigger | When |
+| --- | --- |
+| `workflow_dispatch` | Manual |
+| Push to `main` | Dockerfile / entrypoint / `bin/**` / `.dockerignore` / this workflow |
+| Git tag `v*` | Semver releases |
+
+| Tag shape | Example |
+| --- | --- |
+| Semver (on `v*` tags) | `v0.1.0`, `0.1.0` |
+| Short SHA | `sha-<12>` |
 
 ## What's in the image
 
