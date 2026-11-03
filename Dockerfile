@@ -78,11 +78,13 @@ RUN arch="$(dpkg --print-architecture)" && \
     ln -sf /home/agent/.local/share/cursor-agent/versions/${CURSOR_AGENT_VERSION}/cursor-agent /usr/local/bin/agent && \
     chown -R agent:agent /home/agent/.local
 
-# ── Forge HTTPS helper + entrypoint + ready probe ────────────────────────
+# ── Forge HTTPS helper + secret materialize + entrypoint + ready probe ───
 COPY bin/configure-git-auth.sh /usr/local/bin/configure-git-auth.sh
+COPY bin/materialize-secrets.sh /usr/local/bin/materialize-secrets.sh
 COPY bin/ready.sh /usr/local/bin/ready.sh
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /usr/local/bin/configure-git-auth.sh /usr/local/bin/ready.sh /entrypoint.sh && \
+RUN chmod +x /usr/local/bin/configure-git-auth.sh /usr/local/bin/materialize-secrets.sh \
+      /usr/local/bin/ready.sh /entrypoint.sh && \
     chown agent:agent /entrypoint.sh
 
 # asdf data dir on the workspaces volume path by default; plugins installable.

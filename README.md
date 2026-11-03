@@ -40,15 +40,28 @@ GitHub Actions (`.github/workflows/docker-publish.yml`) builds **linux/amd64 + l
 Order:
 
 1. Source config (`.env` / Secret env-file mounts)
-2. Hard gates — required binaries (`multica`, `cursor-agent`, `git`, `jq`, `curl`, `asdf`) and secrets (`MULTICA_TOKEN`, `CURSOR_API_KEY`, at least one forge token)
-3. Configure git HTTPS credential helper
-4. `exec multica daemon start --foreground`
+2. Materialize Secret-projected Multica home (`config.json` + `daemon.id`) into ephemeral `~/.multica`; load Cursor/git token files
+3. Hard gates — required binaries (`multica`, `cursor-agent`, `git`, `jq`, `curl`, `asdf`) and secrets (Multica auth, `CURSOR_API_KEY`, at least one forge token)
+4. Configure git HTTPS credential helper
+5. `exec multica daemon start --foreground`
 
 **Ready** = daemon is up after gates. **Crash** = missing secret/binary/git-auth (non-zero exit → CrashLoop).
 
 There is **no** ConfigMap inventory sync at boot. Repo trees land on the workspaces volume when Multica runs `repo checkout` for a task. The **first task may cold-clone**; that is expected and is not a Ready gate.
 
 Scratch shell (bypasses gates): `docker run --rm -it --entrypoint /bin/bash ghcr.io/gondoi/multica-runtime:sha-…`
+
+## Secrets (compose + Kubernetes parity)
+
+Multica home is **Secret-projected** — there is **no** Multica-home PVC. Only the workspaces volume is durable.
+
+| Secret keys | Mount path | Purpose |
+| --- | --- | --- |
+| `config.json`, `daemon.id` | `/run/secrets/multica-home/` | Multica identity (copied to ephemeral `~/.multica`) |
+| `CURSOR_API_KEY` | `/run/secrets/cursor/CURSOR_API_KEY` | Cursor agent |
+| `GITHUB_TOKEN` (etc.) | `/run/secrets/git/GITHUB_TOKEN` | git HTTPS for lazy checkout |
+
+Env vars override files when set. Layout details: [`examples/secrets/`](examples/secrets/). Kubernetes examples: [`examples/k8s/`](examples/k8s/).
 
 ## Build locally
 
@@ -60,13 +73,18 @@ Smoke that baseline binaries exist:
 
 ```bash
 docker run --rm --entrypoint /bin/bash multica-runtime:local -lc \
-  'command -v multica cursor-agent asdf git ssh jq curl tini ready.sh'
+  'command -v multica cursor-agent asdf git ssh jq curl tini ready.sh materialize-secrets.sh'
 ```
 
 ### Compose (laptop parity)
 
 ```bash
-cp .env.example .env   # fill MULTICA_TOKEN, CURSOR_API_KEY, GITHUB_TOKEN
+mkdir -p secrets/multica-home secrets/cursor secrets/git
+cp examples/secrets/multica-home/config.json.example secrets/multica-home/config.json
+cp examples/secrets/multica-home/daemon.id.example   secrets/multica-home/daemon.id
+# edit secrets/… then:
+printf '%s' "$CURSOR_API_KEY" > secrets/cursor/CURSOR_API_KEY
+printf '%s' "$GITHUB_TOKEN"   > secrets/git/GITHUB_TOKEN
 docker compose up -d --build
 docker compose ps      # healthy when ready.sh passes
 ```
@@ -81,21 +99,22 @@ Automated fixture check (stub Multica for happy path — no live cloud required)
 
 ## Configuration (placeholders)
 
-See [`.env.example`](.env.example). Tokens and keys are supplied at run time (Secret / env-file) — never baked into layers.
+See [`.env.example`](.env.example) for optional non-secret knobs. Tokens prefer Secret file mounts under `secrets/` — never bake them into layers.
 
-| Variable | Purpose |
+| Source | Purpose |
 | --- | --- |
-| `MULTICA_TOKEN` | Multica PAT (**required** for daemon Ready) |
-| `CURSOR_API_KEY` | Cursor agent auth (**required**) |
-| `GITHUB_TOKEN` | git HTTPS for lazy checkout (**required** unless GitLab/Gitea token set) |
+| `secrets/multica-home/config.json` | Multica PAT + server/workspace (**required** unless `MULTICA_TOKEN` env) |
+| `secrets/multica-home/daemon.id` | Stable daemon id across recreates |
+| `secrets/cursor/CURSOR_API_KEY` | Cursor agent auth (**required**) |
+| `secrets/git/GITHUB_TOKEN` | git HTTPS for lazy checkout (**required** unless GitLab/Gitea) |
 | `MULTICA_WORKSPACES_ROOT` | Configurable workspaces root (default `/home/agent/workspaces`) |
-| `MULTICA_DAEMON_ID` | Stable daemon id across recreates |
 
 ## Design notes
 
 - Repos are **not** cloned at image build or at container start. Register them in Multica workspace/project metadata; materialize with `multica repo checkout` during tasks (first task may cold-clone).
 - `asdf` is installed with plugin-install capability; pin tool versions on the workspaces volume, not in the image.
 - Patterns inspired by community Multica runtimes (`tini`, non-root user, forge HTTPS helpers) — adapted for a Cursor-first, asdf-based baseline.
+- AWS ConfigMap / aws-sso wiring is deferred past first daemon smoke.
 
 ## License
 

@@ -1,7 +1,14 @@
-# Multica runtime home-base — compose / laptop parity with the container boot contract.
+# Multica runtime home-base — compose / laptop parity with the K8s Secret
+# mount contract (no cluster required).
 #
-#   cp .env.example .env          # fill MULTICA_TOKEN, CURSOR_API_KEY, GITHUB_TOKEN
-#   docker compose up -d --build  # build + start daemon (Ready = daemon up)
+#   mkdir -p secrets/multica-home secrets/cursor secrets/git
+#   cp examples/secrets/multica-home/config.json.example secrets/multica-home/config.json
+#   cp examples/secrets/multica-home/daemon.id.example   secrets/multica-home/daemon.id
+#   printf '%s' "$CURSOR_API_KEY" > secrets/cursor/CURSOR_API_KEY
+#   printf '%s' "$GITHUB_TOKEN"   > secrets/git/GITHUB_TOKEN
+#   # optional: still use .env for non-secret knobs (URLs, workspace id)
+#   cp .env.example .env
+#   docker compose up -d --build
 #   docker compose logs -f
 #   docker compose down
 #
@@ -11,22 +18,32 @@
 #   ./test/boot/run-seam.sh
 #
 # Repos are NOT cloned at start. First task may cold-clone via `multica repo checkout`.
+#
+# Volume roles:
+#   - workspaces: durable (.repos, worktrees, asdf, provider homes)
+#   - Multica home is Secret-projected / bind-mounted — NOT a named volume
 
 services:
   runtime:
     image: multica-runtime:local
     build: .
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       MULTICA_WORKSPACES_ROOT: /home/agent/workspaces
-      MULTICA_DAEMON_ID: ${MULTICA_DAEMON_ID:-multica-runtime}
       MULTICA_AGENT_RUNTIME_NAME: ${MULTICA_AGENT_RUNTIME_NAME:-multica-runtime}
+      # Secret dirs match K8s projected mounts (see examples/k8s/).
+      MULTICA_HOME_SECRET_DIR: /run/secrets/multica-home
+      CURSOR_API_KEY_FILE: /run/secrets/cursor/CURSOR_API_KEY
+      GITHUB_TOKEN_FILE: /run/secrets/git/GITHUB_TOKEN
     volumes:
       # Workspaces PVC role: .repos bare cache, task worktrees, asdf data, provider homes.
       - multica-workspaces:/home/agent/workspaces
-      # Optional: persist Multica home across recreate (Secret projection is the K8s path).
-      - multica-home:/home/agent/.multica
+      # Secret projection parity (bind-mount local secrets/ tree).
+      - ./secrets/multica-home:/run/secrets/multica-home:ro
+      - ./secrets/cursor:/run/secrets/cursor:ro
+      - ./secrets/git:/run/secrets/git:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "/usr/local/bin/ready.sh"]
@@ -37,4 +54,3 @@ services:
 
 volumes:
   multica-workspaces:
-  multica-home:

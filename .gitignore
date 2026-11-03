@@ -1,6 +1,8 @@
 .env
 .env.*
 !.env.example
+# Local compose Secret bind-mounts (never commit real tokens).
+/secrets/
 *.pem
 *.key
 .DS_Store
