@@ -110,9 +110,8 @@ See [`.env.example`](.env.example) for optional non-secret knobs. Tokens prefer 
 | `secrets/cursor/CURSOR_API_KEY` | Cursor agent auth (**required**) |
 | `secrets/git/GITHUB_TOKEN` | git HTTPS for lazy checkout (**required** unless GitLab/Gitea) |
 | `MULTICA_WORKSPACES_ROOT` | Configurable workspaces root (default `/home/agent/workspaces`) |
-| `MULTICA_WORKSPACE` | Default workspace after login — slug, display name, or UUID (e.g. `fuel-labs`). Preferred over `MULTICA_WORKSPACE_ID`. |
-| `MULTICA_WORKSPACE_ID` | Legacy alias of `MULTICA_WORKSPACE` (same slug/name/UUID resolution) |
-| `MULTICA_WORKSPACE` | Default workspace after login: **slug**, display **name**, or **UUID** (preferred). Fallback: `MULTICA_WORKSPACE_ID`, then Secret `config.json` `.workspace_id`. |
+| `MULTICA_WORKSPACE` | Default workspace after login: slug, display name, or UUID (e.g. `fuel-labs`). Fallback: `MULTICA_WORKSPACE_ID`, then Secret `config.json` `.workspace_id`. |
+| `MULTICA_WORKSPACE_ID` | Legacy alias of `MULTICA_WORKSPACE` (same resolution) |
 
 ## Design notes
 

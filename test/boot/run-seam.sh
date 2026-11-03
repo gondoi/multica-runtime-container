@@ -8,6 +8,7 @@
 # Covers:
 #   - env-file secrets (override path)
 #   - Secret-projected Multica home + Cursor/git file mounts (K8s parity)
+#   - login workspace_id clobber → re-pin from Secret / MULTICA_WORKSPACE slug
 #
 # Usage (from repo root):
 #   ./test/boot/run-seam.sh

@@ -4,7 +4,7 @@
 #   2. Materialize Secret-projected Multica home + Cursor/git tokens
 #   3. Hard-fail gates (required binaries + Multica/Cursor/git-auth secrets)
 #   4. Configure git HTTPS credential helper
-#   5. exec multica daemon start --foreground
+#   5. login → pin workspace (env/Secret) → exec multica daemon start --foreground
 #
 # Ready = daemon is up after gates. There is NO boot-time inventory sync —
 # repos materialize lazily via `multica repo checkout` during tasks.
