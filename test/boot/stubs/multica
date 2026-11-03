@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Boot-seam stub for `multica`. Passes login/config and stays up on
+# `daemon start --foreground` so compose/boot can assert Ready without a
+# live Multica cloud. Not shipped in the image — mounted only by run-seam.sh.
+set -euo pipefail
+
+cmd="${1:-}"
+case "$cmd" in
+  config|login|version)
+    exit 0
+    ;;
+  daemon)
+    sub="${2:-}"
+    case "$sub" in
+      start)
+        ready="${MULTICA_READY_FILE:-/tmp/multica-runtime.ready}"
+        : >"$ready"
+        # Mimic foreground daemon — stay alive until SIGTERM.
+        exec sleep infinity
+        ;;
+      status)
+        ready="${MULTICA_READY_FILE:-/tmp/multica-runtime.ready}"
+        if [ -f "$ready" ]; then
+          [ "${3:-}" = "--output" ] && [ "${4:-}" = "json" ] && echo '{"status":"running"}'
+          exit 0
+        fi
+        exit 1
+        ;;
+      *)
+        exit 0
+        ;;
+    esac
+    ;;
+  *)
+    exit 0
+    ;;
+esac

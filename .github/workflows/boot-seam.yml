@@ -1,0 +1,37 @@
+# Compose/boot seam: Ready vs Crash fixtures (no live Multica cloud).
+name: Boot seam
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - entrypoint.sh
+      - bin/**
+      - docker-compose.yml
+      - test/boot/**
+      - .github/workflows/boot-seam.yml
+  pull_request:
+    paths:
+      - Dockerfile
+      - entrypoint.sh
+      - bin/**
+      - docker-compose.yml
+      - test/boot/**
+      - .github/workflows/boot-seam.yml
+
+concurrency:
+  group: boot-seam-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  seam:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run boot seam
+        run: |
+          set -euo pipefail
+          chmod +x test/boot/run-seam.sh
+          ./test/boot/run-seam.sh

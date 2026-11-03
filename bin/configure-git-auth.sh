@@ -9,7 +9,7 @@
 #   GITEA_TOKEN  + GITEA_HOST    → Gitea/Forgejo (host required)
 #   GITEA_USER                   → optional username (default oauth2)
 #
-# Exit 0 always when invoked without tokens (caller decides hard-fail policy).
+# Exit 1 when no forge tokens are present (boot hard-fail policy).
 set -euo pipefail
 
 CRED_FILE="${GIT_CREDENTIALS_FILE:-$HOME/.git-credentials}"
@@ -28,9 +28,14 @@ add_git_cred "github.com" "${GITHUB_USER:-x-access-token}" "${GITHUB_TOKEN:-}"
 add_git_cred "${GITLAB_HOST:-gitlab.com}" "oauth2" "${GITLAB_TOKEN:-}"
 add_git_cred "${GITEA_HOST:-}" "${GITEA_USER:-oauth2}" "${GITEA_TOKEN:-}"
 
-if [ "$have_git_creds" = 1 ]; then
-  git config --global credential.helper store
-  echo "git HTTPS credentials configured ($CRED_FILE)" >&2
-else
-  echo "warning: no forge tokens set; git HTTPS auth not configured" >&2
+if [ "$have_git_creds" != 1 ]; then
+  echo "FATAL: no forge tokens set; git HTTPS auth not configured" >&2
+  exit 1
 fi
+
+git config --global credential.helper store
+# Prefer unambiguous GH_TOKEN for tooling that reads it first.
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+  export GH_TOKEN="${GH_TOKEN:-$GITHUB_TOKEN}"
+fi
+echo "git HTTPS credentials configured ($CRED_FILE)" >&2

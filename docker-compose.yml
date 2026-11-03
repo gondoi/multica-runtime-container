@@ -1,0 +1,40 @@
+# Multica runtime home-base — compose / laptop parity with the container boot contract.
+#
+#   cp .env.example .env          # fill MULTICA_TOKEN, CURSOR_API_KEY, GITHUB_TOKEN
+#   docker compose up -d --build  # build + start daemon (Ready = daemon up)
+#   docker compose logs -f
+#   docker compose down
+#
+# Scratch shell (bypasses hard gates): docker compose run --rm --entrypoint bash runtime
+#
+# Boot seam (Ready vs Crash fixtures, no real Multica cloud required):
+#   ./test/boot/run-seam.sh
+#
+# Repos are NOT cloned at start. First task may cold-clone via `multica repo checkout`.
+
+services:
+  runtime:
+    image: multica-runtime:local
+    build: .
+    env_file:
+      - .env
+    environment:
+      MULTICA_WORKSPACES_ROOT: /home/agent/workspaces
+      MULTICA_DAEMON_ID: ${MULTICA_DAEMON_ID:-multica-runtime}
+      MULTICA_AGENT_RUNTIME_NAME: ${MULTICA_AGENT_RUNTIME_NAME:-multica-runtime}
+    volumes:
+      # Workspaces PVC role: .repos bare cache, task worktrees, asdf data, provider homes.
+      - multica-workspaces:/home/agent/workspaces
+      # Optional: persist Multica home across recreate (Secret projection is the K8s path).
+      - multica-home:/home/agent/.multica
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/ready.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+
+volumes:
+  multica-workspaces:
+  multica-home:
