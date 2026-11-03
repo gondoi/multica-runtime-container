@@ -1,0 +1,10 @@
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.tmp
