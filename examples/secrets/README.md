@@ -13,7 +13,11 @@ secrets/
   cursor/
     CURSOR_API_KEY  # single-line Cursor API key
   git/
-    GITHUB_TOKEN    # and/or GITLAB_TOKEN, GITEA_TOKEN
+    GITHUB_TOKEN    # Option A: static PAT (and/or GITLAB_TOKEN, GITEA_TOKEN)
+    # Option B: GitHub App (org-safe; use instead of or preferred over PAT)
+    # GITHUB_APP_ID
+    # GITHUB_APP_INSTALLATION_ID
+    # GITHUB_APP_PRIVATE_KEY   # full PEM including BEGIN/END lines
 ```
 
 ## Compose
@@ -24,11 +28,16 @@ cp examples/secrets/multica-home/config.json.example secrets/multica-home/config
 cp examples/secrets/multica-home/daemon.id.example   secrets/multica-home/daemon.id
 # edit config.json (server/app URLs, workspace_id, token)
 printf '%s' 'cursor_…' > secrets/cursor/CURSOR_API_KEY
+# Option A — PAT:
 printf '%s' 'ghp_…'    > secrets/git/GITHUB_TOKEN
+# Option B — GitHub App (omit GITHUB_TOKEN when switching fully):
+# printf '%s' '123456'   > secrets/git/GITHUB_APP_ID
+# printf '%s' '12345678' > secrets/git/GITHUB_APP_INSTALLATION_ID
+# cp /path/to/app.private-key.pem secrets/git/GITHUB_APP_PRIVATE_KEY
 docker compose up -d --build
 ```
 
-`secrets/` is gitignored — never commit real tokens.
+`secrets/` is gitignored — never commit real tokens or App PEMs.
 
 `multica login` may rewrite `workspace_id` to the token's default workspace.
 The entrypoint re-pins after login from (in order): env `MULTICA_WORKSPACE`
@@ -39,4 +48,5 @@ GitOps need not bake UUIDs.
 ## Kubernetes
 
 See [`examples/k8s/`](../k8s/) for a Deployment that projects the same keys to
-`/run/secrets/...`. Homelab SOPS / Flux packaging is a later GitOps slice.
+`/run/secrets/...`. Consumer overlays (SOPS / Flux) stay out of this published
+tree — wire App PEM + IDs in the private overlay only.

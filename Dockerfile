@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
     jq \
+    openssl \
     openssh-client \
     procps \
     tini \
@@ -78,12 +79,17 @@ RUN arch="$(dpkg --print-architecture)" && \
     ln -sf /home/agent/.local/share/cursor-agent/versions/${CURSOR_AGENT_VERSION}/cursor-agent /usr/local/bin/agent && \
     chown -R agent:agent /home/agent/.local
 
-# ── Forge HTTPS helper + secret materialize + entrypoint + ready probe ───
+# ── Forge HTTPS helper + GitHub App mint + secret materialize + ready ────
 COPY bin/configure-git-auth.sh /usr/local/bin/configure-git-auth.sh
+COPY bin/mint-github-app-token.sh /usr/local/bin/mint-github-app-token.sh
+COPY bin/github-app-credential-helper.sh /usr/local/bin/github-app-credential-helper.sh
 COPY bin/materialize-secrets.sh /usr/local/bin/materialize-secrets.sh
 COPY bin/ready.sh /usr/local/bin/ready.sh
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /usr/local/bin/configure-git-auth.sh /usr/local/bin/materialize-secrets.sh \
+RUN chmod +x /usr/local/bin/configure-git-auth.sh \
+      /usr/local/bin/mint-github-app-token.sh \
+      /usr/local/bin/github-app-credential-helper.sh \
+      /usr/local/bin/materialize-secrets.sh \
       /usr/local/bin/ready.sh /entrypoint.sh && \
     chown agent:agent /entrypoint.sh
 

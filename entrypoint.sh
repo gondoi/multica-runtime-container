@@ -65,7 +65,15 @@ have_git_token=0
 [ -n "${GITHUB_TOKEN:-}" ] && have_git_token=1
 [ -n "${GITLAB_TOKEN:-}" ] && have_git_token=1
 [ -n "${GITEA_TOKEN:-}" ] && have_git_token=1
-[ "$have_git_token" = 1 ] || die "git HTTPS auth required: set GITHUB_TOKEN and/or GITLAB_TOKEN and/or GITEA_TOKEN (env or /run/secrets/git/*)"
+# GitHub App trio (App ID + installation ID + PEM) satisfies the git gate without a PAT.
+have_github_app=0
+if [ -n "${GITHUB_APP_ID:-}" ] && [ -n "${GITHUB_APP_INSTALLATION_ID:-}" ]; then
+  if [ -n "${GITHUB_APP_PRIVATE_KEY:-}" ] || [ -f "${GITHUB_APP_PRIVATE_KEY_FILE:-/run/secrets/git/GITHUB_APP_PRIVATE_KEY}" ]; then
+    have_github_app=1
+    have_git_token=1
+  fi
+fi
+[ "$have_git_token" = 1 ] || die "git HTTPS auth required: set GITHUB_TOKEN and/or GITLAB_TOKEN and/or GITEA_TOKEN, or GitHub App credentials (GITHUB_APP_ID + GITHUB_APP_INSTALLATION_ID + PEM) under /run/secrets/git/"
 
 # ── 4. Git credential helper (hard-fail if helper cannot configure) ───────
 /usr/local/bin/configure-git-auth.sh

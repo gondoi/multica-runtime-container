@@ -14,6 +14,9 @@
 #   ${GITHUB_TOKEN_FILE:-/run/secrets/git/GITHUB_TOKEN}
 #   ${GITLAB_TOKEN_FILE:-/run/secrets/git/GITLAB_TOKEN}
 #   ${GITEA_TOKEN_FILE:-/run/secrets/git/GITEA_TOKEN}
+#   ${GITHUB_APP_ID_FILE:-/run/secrets/git/GITHUB_APP_ID}
+#   ${GITHUB_APP_INSTALLATION_ID_FILE:-/run/secrets/git/GITHUB_APP_INSTALLATION_ID}
+#   ${GITHUB_APP_PRIVATE_KEY_FILE:-/run/secrets/git/GITHUB_APP_PRIVATE_KEY}
 #
 # Env vars already set win over files. Exit 1 on unrecoverable misconfig.
 set -euo pipefail
@@ -71,11 +74,25 @@ if [ -z "${MULTICA_TOKEN:-}" ] && [ -f "$MULTICA_HOME/config.json" ]; then
   fi
 fi
 
-# ── Cursor + git token files ──────────────────────────────────────────────
+# ── Cursor + git token / GitHub App files ─────────────────────────────────
 read_secret_file CURSOR_API_KEY "${CURSOR_API_KEY_FILE:-/run/secrets/cursor/CURSOR_API_KEY}"
 read_secret_file GITHUB_TOKEN "${GITHUB_TOKEN_FILE:-/run/secrets/git/GITHUB_TOKEN}"
 read_secret_file GITLAB_TOKEN "${GITLAB_TOKEN_FILE:-/run/secrets/git/GITLAB_TOKEN}"
 read_secret_file GITEA_TOKEN "${GITEA_TOKEN_FILE:-/run/secrets/git/GITEA_TOKEN}"
+read_secret_file GITHUB_APP_ID "${GITHUB_APP_ID_FILE:-/run/secrets/git/GITHUB_APP_ID}"
+read_secret_file GITHUB_APP_INSTALLATION_ID \
+  "${GITHUB_APP_INSTALLATION_ID_FILE:-/run/secrets/git/GITHUB_APP_INSTALLATION_ID}"
+# PEM may be multi-line — read raw file into env when unset (keep newlines).
+if [ -z "${GITHUB_APP_PRIVATE_KEY:-}" ]; then
+  _app_pem_path="${GITHUB_APP_PRIVATE_KEY_FILE:-/run/secrets/git/GITHUB_APP_PRIVATE_KEY}"
+  if [ -f "$_app_pem_path" ]; then
+    GITHUB_APP_PRIVATE_KEY="$(cat "$_app_pem_path")"
+    export GITHUB_APP_PRIVATE_KEY
+  fi
+  unset _app_pem_path
+fi
+# Always export file path for mint script (file mount preferred over env echo).
+export GITHUB_APP_PRIVATE_KEY_FILE="${GITHUB_APP_PRIVATE_KEY_FILE:-/run/secrets/git/GITHUB_APP_PRIVATE_KEY}"
 
 # Persist daemon.id into Multica home when only env provided (compose convenience).
 if [ ! -f "$MULTICA_HOME/daemon.id" ] && [ -n "${MULTICA_DAEMON_ID:-}" ]; then

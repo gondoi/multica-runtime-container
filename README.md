@@ -40,9 +40,9 @@ GitHub Actions (`.github/workflows/docker-publish.yml`) builds **linux/amd64 + l
 Order:
 
 1. Source config (`.env` / Secret env-file mounts)
-2. Materialize Secret-projected Multica home (`config.json` + `daemon.id`) into ephemeral `~/.multica`; load Cursor/git token files
-3. Hard gates — required binaries (`multica`, `cursor-agent`, `git`, `jq`, `curl`, `asdf`) and secrets (Multica auth, `CURSOR_API_KEY`, at least one forge token)
-4. Configure git HTTPS credential helper
+2. Materialize Secret-projected Multica home (`config.json` + `daemon.id`) into ephemeral `~/.multica`; load Cursor/git token (and optional GitHub App) files
+3. Hard gates — required binaries (`multica`, `cursor-agent`, `git`, `jq`, `curl`, `asdf`, `openssl`) and secrets (Multica auth, `CURSOR_API_KEY`, forge token **or** GitHub App credentials)
+4. Configure git HTTPS credential helper (static store and/or GitHub App installation-token helper)
 5. `multica login` (token refresh) → **re-pin workspace** (login can clobber `workspace_id`) → `exec multica daemon start --foreground`
 
 **Ready** = daemon is up after gates. **Crash** = missing secret/binary/git-auth (non-zero exit → CrashLoop).
@@ -61,9 +61,24 @@ Multica home is **Secret-projected** — there is **no** Multica-home PVC. Only 
 | --- | --- | --- |
 | `config.json`, `daemon.id` | `/run/secrets/multica-home/` | Multica identity (copied to ephemeral `~/.multica`) |
 | `CURSOR_API_KEY` | `/run/secrets/cursor/CURSOR_API_KEY` | Cursor agent |
-| `GITHUB_TOKEN` (etc.) | `/run/secrets/git/GITHUB_TOKEN` | git HTTPS for lazy checkout |
+| `GITHUB_TOKEN` (etc.) | `/run/secrets/git/GITHUB_TOKEN` | git HTTPS via static PAT (personal / orgs that allow PATs) |
+| `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY` | `/run/secrets/git/` | git HTTPS via short-lived App installation tokens (org-safe; preferred when PATs are banned) |
 
-Env vars override files when set. Layout details: [`examples/secrets/`](examples/secrets/). Kubernetes examples: [`examples/k8s/`](examples/k8s/).
+Provide **either** a static forge token **or** the GitHub App trio (App wins for `github.com` when both are present). Env vars override files when set. Layout details: [`examples/secrets/`](examples/secrets/). Kubernetes examples: [`examples/k8s/`](examples/k8s/).
+
+### GitHub App git auth (no PAT)
+
+For orgs that disallow PATs, create a GitHub App with **minimum** permissions:
+
+| Permission | Access | Why |
+| --- | --- | --- |
+| Metadata | Read | Required baseline |
+| Contents | Read and write | Clone + push agent feature branches |
+| Pull requests | Read and write | Open PRs |
+
+**Do not** grant administration or “bypass branch protection / rules”. Protected `main` stays PR-only; the App cannot push straight to protected branches.
+
+Install the App on the target account/org (select only the repos agents need). Project App ID, installation ID, and the downloaded PEM under `/run/secrets/git/`. Boot mints an installation token and configures a git credential helper that remints when the ~1h token expires.
 
 ## Build locally
 
@@ -108,7 +123,8 @@ See [`.env.example`](.env.example) for optional non-secret knobs. Tokens prefer 
 | `secrets/multica-home/config.json` | Multica PAT + server/workspace (**required** unless `MULTICA_TOKEN` env) |
 | `secrets/multica-home/daemon.id` | Stable daemon id across recreates |
 | `secrets/cursor/CURSOR_API_KEY` | Cursor agent auth (**required**) |
-| `secrets/git/GITHUB_TOKEN` | git HTTPS for lazy checkout (**required** unless GitLab/Gitea) |
+| `secrets/git/GITHUB_TOKEN` | git HTTPS PAT (**required** unless GitLab/Gitea **or** GitHub App trio) |
+| `secrets/git/GITHUB_APP_*` | App ID + installation ID + PEM (alternative to `GITHUB_TOKEN`) |
 | `MULTICA_WORKSPACES_ROOT` | Configurable workspaces root (default `/home/agent/workspaces`) |
 | `MULTICA_WORKSPACE` | Default workspace after login: slug, display name, or UUID (e.g. `fuel-labs`). Fallback: `MULTICA_WORKSPACE_ID`, then Secret `config.json` `.workspace_id`. |
 | `MULTICA_WORKSPACE_ID` | Legacy alias of `MULTICA_WORKSPACE` (same resolution) |

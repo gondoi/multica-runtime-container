@@ -45,6 +45,7 @@ docker build -t "$IMAGE" .
 
 chmod +x "$STUB" "$ROOT/entrypoint.sh" \
   "$ROOT/bin/configure-git-auth.sh" "$ROOT/bin/materialize-secrets.sh" \
+  "$ROOT/bin/mint-github-app-token.sh" "$ROOT/bin/github-app-credential-helper.sh" \
   "$ROOT/bin/ready.sh"
 
 run_crash() {

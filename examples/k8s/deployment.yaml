@@ -33,6 +33,13 @@ spec:
               value: /run/secrets/cursor/CURSOR_API_KEY
             - name: GITHUB_TOKEN_FILE
               value: /run/secrets/git/GITHUB_TOKEN
+            # Optional GitHub App path (org-safe; replaces PAT when mounted):
+            # - name: GITHUB_APP_ID_FILE
+            #   value: /run/secrets/git/GITHUB_APP_ID
+            # - name: GITHUB_APP_INSTALLATION_ID_FILE
+            #   value: /run/secrets/git/GITHUB_APP_INSTALLATION_ID
+            # - name: GITHUB_APP_PRIVATE_KEY_FILE
+            #   value: /run/secrets/git/GITHUB_APP_PRIVATE_KEY
             - name: MULTICA_WORKSPACES_ROOT
               value: /home/agent/workspaces
             - name: MULTICA_AGENT_RUNTIME_NAME
@@ -90,6 +97,9 @@ spec:
         - name: git
           secret:
             secretName: multica-runtime-git
+            # PAT path (default). For App auth, replace items with:
+            #   GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, GITHUB_APP_PRIVATE_KEY
+            # (and drop GITHUB_TOKEN). Secret keys must match items or the pod fails to mount.
             items:
               - key: GITHUB_TOKEN
                 path: GITHUB_TOKEN
