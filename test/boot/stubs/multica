@@ -2,11 +2,88 @@
 # Boot-seam stub for `multica`. Passes login/config and stays up on
 # `daemon start --foreground` so compose/boot can assert Ready without a
 # live Multica cloud. Not shipped in the image — mounted only by run-seam.sh.
+#
+# When MULTICA_HOME/config.json exists:
+#   - `login` clobbers workspace_id to MULTICA_STUB_LOGIN_WORKSPACE_ID
+#     (simulates real CLI picking a non-Secret default).
+#   - `config set workspace_id <uuid>` writes that key into config.json.
+#   - `workspace list --output json` returns MULTICA_STUB_WORKSPACES_JSON
+#     (or a tiny built-in two-workspace fixture).
 set -euo pipefail
+
+HOME_DIR="${MULTICA_HOME:-$HOME/.multica}"
+CFG="$HOME_DIR/config.json"
+LOGIN_WS="${MULTICA_STUB_LOGIN_WORKSPACE_ID:-11111111-1111-1111-1111-111111111111}"
+
+ensure_cfg() {
+  mkdir -p "$HOME_DIR"
+  if [ ! -f "$CFG" ]; then
+    printf '%s\n' '{"server_url":"https://api.multica.ai","app_url":"https://multica.ai","workspace_id":"","token":""}' >"$CFG"
+  fi
+}
+
+set_cfg_key() {
+  local key="$1" val="$2"
+  ensure_cfg
+  if command -v jq >/dev/null 2>&1; then
+    local tmp
+    tmp="$(mktemp)"
+    jq --arg k "$key" --arg v "$val" '.[$k]=$v' "$CFG" >"$tmp"
+    mv "$tmp" "$CFG"
+  else
+    # Minimal fallback: rewrite whole object (boot seam always has jq in image).
+    printf '{"%s":"%s"}\n' "$key" "$val" >"$CFG"
+  fi
+}
 
 cmd="${1:-}"
 case "$cmd" in
-  config|login|version)
+  config)
+    sub="${2:-}"
+    case "$sub" in
+      set)
+        key="${3:-}"
+        val="${4:-}"
+        [ -n "$key" ] || exit 1
+        set_cfg_key "$key" "$val"
+        exit 0
+        ;;
+      *)
+        exit 0
+        ;;
+    esac
+    ;;
+  login)
+    ensure_cfg
+    # Real CLI login refreshes token and may flip default workspace.
+    set_cfg_key token "${MULTICA_TOKEN:-mul_stub}"
+    set_cfg_key workspace_id "$LOGIN_WS"
+    exit 0
+    ;;
+  workspace)
+    sub="${2:-}"
+    case "$sub" in
+      list)
+        if [ "${3:-}" = "--output" ] && [ "${4:-}" = "json" ]; then
+          if [ -n "${MULTICA_STUB_WORKSPACES_JSON:-}" ]; then
+            printf '%s\n' "$MULTICA_STUB_WORKSPACES_JSON"
+          else
+            cat <<'JSON'
+[
+  {"id":"11111111-1111-1111-1111-111111111111","name":"Homelab","slug":"homelab"},
+  {"id":"00000000-0000-0000-0000-000000000001","name":"Fuel Labs","slug":"fuel-labs"}
+]
+JSON
+          fi
+        fi
+        exit 0
+        ;;
+      *)
+        exit 0
+        ;;
+    esac
+    ;;
+  version)
     exit 0
     ;;
   daemon)

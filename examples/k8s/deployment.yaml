@@ -37,6 +37,14 @@ spec:
               value: /home/agent/workspaces
             - name: MULTICA_AGENT_RUNTIME_NAME
               value: multica-runtime
+            # Optional: pin default workspace after login (slug, name, or UUID).
+            # Falls back to projected Secret config.json .workspace_id when unset.
+            # - name: MULTICA_WORKSPACE
+            #   value: fuel-labs
+            # Optional: pin default workspace after login (slug, name, or UUID).
+            # Prefer consumer overlay for tenant-specific values.
+            # - name: MULTICA_WORKSPACE
+            #   value: fuel-labs
           volumeMounts:
             - name: workspaces
               mountPath: /home/agent/workspaces

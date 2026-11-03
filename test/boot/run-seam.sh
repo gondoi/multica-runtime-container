@@ -27,6 +27,7 @@ pass=0
 fail=0
 cname_env=""
 cname_proj=""
+cname_slug=""
 
 ok() { printf 'PASS  %s\n' "$*"; pass=$((pass + 1)); }
 bad() { printf 'FAIL  %s\n' "$*"; fail=$((fail + 1)); }
@@ -34,6 +35,7 @@ bad() { printf 'FAIL  %s\n' "$*"; fail=$((fail + 1)); }
 cleanup() {
   [ -n "$cname_env" ] && docker rm -f "$cname_env" >/dev/null 2>&1 || true
   [ -n "$cname_proj" ] && docker rm -f "$cname_proj" >/dev/null 2>&1 || true
+  [ -n "$cname_slug" ] && docker rm -f "$cname_slug" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -155,6 +157,38 @@ if grep -Eq 'multica-home:/home/agent/\.multica' "$ROOT/docker-compose.yml"; the
   bad "compose still mounts a Multica-home volume at ~/.multica"
 else
   ok "compose has no Multica-home volume (Secret bind-mounts only)"
+fi
+
+# Login clobber regression: stub login flips workspace_id to Homelab; entrypoint
+# must re-pin from projected Secret (or MULTICA_WORKSPACE slug) after login.
+live_ws="$(docker exec "$cname_proj" jq -r '.workspace_id // empty' /home/agent/.multica/config.json 2>/dev/null || true)"
+if [ "$live_ws" = "00000000-0000-0000-0000-000000000001" ]; then
+  ok "workspace pin after login (Secret workspace_id survives stub login clobber)"
+else
+  bad "workspace pin after login failed: live='$live_ws' want Secret Fuel Labs UUID"
+  docker exec "$cname_proj" cat /home/agent/.multica/config.json >&2 || true
+  docker logs "$cname_proj" >&2 || true
+fi
+
+echo "==> Happy path — MULTICA_WORKSPACE slug overrides Secret UUID after login"
+cname_slug="multica-boot-seam-slug-$$"
+docker run -d --name "$cname_slug" \
+  --env-file "$FIX/happy-projected.env" \
+  -e MULTICA_WORKSPACE=fuel-labs \
+  -v "$STUB:/usr/local/bin/multica:ro" \
+  -v "$SECRETS/multica-home:/run/secrets/multica-home:ro" \
+  -v "$SECRETS/cursor:/run/secrets/cursor:ro" \
+  -v "$SECRETS/git:/run/secrets/git:ro" \
+  "$IMAGE" >/dev/null
+
+assert_ready_container "$cname_slug" "happy/slug Ready"
+slug_ws="$(docker exec "$cname_slug" jq -r '.workspace_id // empty' /home/agent/.multica/config.json 2>/dev/null || true)"
+if [ "$slug_ws" = "00000000-0000-0000-0000-000000000001" ] \
+  && docker logs "$cname_slug" 2>&1 | grep -q "workspace pin: default workspace_id=00000000-0000-0000-0000-000000000001 (from 'fuel-labs')"; then
+  ok "MULTICA_WORKSPACE=fuel-labs resolves + pins after login"
+else
+  bad "MULTICA_WORKSPACE slug pin failed: live='$slug_ws'"
+  docker logs "$cname_slug" >&2 || true
 fi
 
 cleanup

@@ -43,9 +43,11 @@ Order:
 2. Materialize Secret-projected Multica home (`config.json` + `daemon.id`) into ephemeral `~/.multica`; load Cursor/git token files
 3. Hard gates — required binaries (`multica`, `cursor-agent`, `git`, `jq`, `curl`, `asdf`) and secrets (Multica auth, `CURSOR_API_KEY`, at least one forge token)
 4. Configure git HTTPS credential helper
-5. `exec multica daemon start --foreground`
+5. `multica login` (token refresh) → **re-pin workspace** (login can clobber `workspace_id`) → `exec multica daemon start --foreground`
 
 **Ready** = daemon is up after gates. **Crash** = missing secret/binary/git-auth (non-zero exit → CrashLoop).
+
+**Workspace pin** (after login): `MULTICA_WORKSPACE` (preferred; slug, display name, or UUID) → `MULTICA_WORKSPACE_ID` (same resolution) → projected Secret `config.json` `.workspace_id` → leave login default.
 
 There is **no** ConfigMap inventory sync at boot. Repo trees land on the workspaces volume when Multica runs `repo checkout` for a task. The **first task may cold-clone**; that is expected and is not a Ready gate.
 
@@ -108,6 +110,9 @@ See [`.env.example`](.env.example) for optional non-secret knobs. Tokens prefer 
 | `secrets/cursor/CURSOR_API_KEY` | Cursor agent auth (**required**) |
 | `secrets/git/GITHUB_TOKEN` | git HTTPS for lazy checkout (**required** unless GitLab/Gitea) |
 | `MULTICA_WORKSPACES_ROOT` | Configurable workspaces root (default `/home/agent/workspaces`) |
+| `MULTICA_WORKSPACE` | Default workspace after login — slug, display name, or UUID (e.g. `fuel-labs`). Preferred over `MULTICA_WORKSPACE_ID`. |
+| `MULTICA_WORKSPACE_ID` | Legacy alias of `MULTICA_WORKSPACE` (same slug/name/UUID resolution) |
+| `MULTICA_WORKSPACE` | Default workspace after login: **slug**, display **name**, or **UUID** (preferred). Fallback: `MULTICA_WORKSPACE_ID`, then Secret `config.json` `.workspace_id`. |
 
 ## Design notes
 

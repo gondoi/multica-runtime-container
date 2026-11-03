@@ -73,25 +73,87 @@ have_git_token=0
 # Export Cursor key for cursor-agent (Secret / env-file / file-mount parity).
 export CURSOR_API_KEY
 
+# Resolve workspace ref (UUID / slug / display name) → UUID.
+# Returns empty string if unresolved (caller decides whether to die).
+resolve_workspace_id() {
+  local ref="$1"
+  local list id
+  [ -n "$ref" ] || return 0
+
+  # UUID (8-4-4-4-12 hex) — use as-is.
+  if printf '%s' "$ref" | grep -Eq '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'; then
+    printf '%s\n' "$ref"
+    return 0
+  fi
+
+  list="$(multica workspace list --output json 2>/dev/null || true)"
+  [ -n "$list" ] || return 0
+
+  id="$(printf '%s' "$list" | jq -r --arg ref "$ref" '
+    (. // [])
+    | map(select(
+        (.id // "") == $ref
+        or (.slug // "") == $ref
+        or ((.name // "") | ascii_downcase) == ($ref | ascii_downcase)
+      ))
+    | .[0].id // empty
+  ' 2>/dev/null || true)"
+
+  printf '%s\n' "$id"
+}
+
+# Pin default workspace AFTER login (login can clobber Secret/env workspace).
+# Preference: MULTICA_WORKSPACE → MULTICA_WORKSPACE_ID → projected Secret config.json.
+pin_workspace_after_login() {
+  local desired resolved secret_cfg live
+  secret_cfg="${MULTICA_HOME_SECRET_DIR:-/run/secrets/multica-home}/config.json"
+
+  desired="${MULTICA_WORKSPACE:-}"
+  if [ -z "$desired" ]; then
+    desired="${MULTICA_WORKSPACE_ID:-}"
+  fi
+  if [ -z "$desired" ] && [ -f "$secret_cfg" ]; then
+    desired="$(jq -r '.workspace_id // empty' "$secret_cfg" 2>/dev/null || true)"
+  fi
+
+  if [ -z "$desired" ]; then
+    log "workspace pin: no MULTICA_WORKSPACE / MULTICA_WORKSPACE_ID / Secret workspace_id — leaving login default"
+    return 0
+  fi
+
+  resolved="$(resolve_workspace_id "$desired")"
+  if [ -z "$resolved" ]; then
+    die "workspace pin: cannot resolve '$desired' to a workspace UUID (check slug/name or MULTICA_WORKSPACE)"
+  fi
+
+  multica config set workspace_id "$resolved" || die "workspace pin: multica config set workspace_id failed"
+  live="$(jq -r '.workspace_id // empty' "$MULTICA_HOME/config.json" 2>/dev/null || true)"
+  if [ "$live" != "$resolved" ]; then
+    die "workspace pin: live workspace_id='$live' != intended '$resolved'"
+  fi
+  log "workspace pin: default workspace_id=$resolved (from '$desired')"
+}
+
 # ── 5. Multica activate → exec daemon foreground (no inventory sync) ──────
 # Prefer already-projected config.json; only fill gaps from env.
 if [ ! -f "${MULTICA_HOME}/config.json" ]; then
   multica config set server_url "$SERVER_URL"
   multica config set app_url "$APP_URL"
-  if [ -n "${MULTICA_WORKSPACE_ID:-}" ]; then
-    multica config set workspace_id "$MULTICA_WORKSPACE_ID"
+  if [ -n "${MULTICA_WORKSPACE:-${MULTICA_WORKSPACE_ID:-}}" ]; then
+    # Best-effort pre-login; pin_workspace_after_login is authoritative.
+    resolved="$(resolve_workspace_id "${MULTICA_WORKSPACE:-$MULTICA_WORKSPACE_ID}" || true)"
+    if [ -n "$resolved" ]; then
+      multica config set workspace_id "$resolved"
+    fi
   fi
   multica login --token "$MULTICA_TOKEN"
 else
-  # Ensure URLs / workspace from env overlay projected config when provided.
+  # Ensure URLs from env overlay projected config when provided.
   if [ -n "${MULTICA_SERVER_URL:-}" ]; then
     multica config set server_url "$SERVER_URL" || true
   fi
   if [ -n "${MULTICA_APP_URL:-}" ]; then
     multica config set app_url "$APP_URL" || true
-  fi
-  if [ -n "${MULTICA_WORKSPACE_ID:-}" ]; then
-    multica config set workspace_id "$MULTICA_WORKSPACE_ID" || true
   fi
   # Refresh token into home when MULTICA_TOKEN was supplied via env (not only file).
   if [ -n "${MULTICA_TOKEN:-}" ]; then
@@ -105,6 +167,9 @@ if [ -f "${MULTICA_HOME_SECRET_DIR:-/run/secrets/multica-home}/daemon.id" ]; the
 elif [ -n "${MULTICA_DAEMON_ID:-}" ]; then
   printf '%s\n' "$MULTICA_DAEMON_ID" >"$MULTICA_HOME/daemon.id"
 fi
+
+# Keep intended workspace authoritative across login side-effects.
+pin_workspace_after_login
 
 log "gates passed; starting daemon (id=${MULTICA_DAEMON_ID} home=${MULTICA_HOME} workspaces=${MULTICA_WORKSPACES_ROOT})"
 # Ready = this process stays up. No ConfigMap inventory clone-all step.
