@@ -1,0 +1,45 @@
+# Conventional Commits gate: the input Release Please parses.
+#
+# Release Please builds the CHANGELOG and picks the next version purely from
+# commit subjects on `main`. A subject it cannot parse is silently dropped from
+# the changelog and can swallow a `feat` (no release PR at all), so this gate
+# fails the PR instead of letting the next release go quiet.
+#
+# Merge commits are ignored (they carry no release meaning), as are
+# `Revert "..."` subjects produced by `git revert`.
+name: Conventional commits
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: conventional-commits-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  commit-subjects:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Check the PR head (not the synthetic merge commit) so the range is
+          # exactly the commits this PR would add to main.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Check commit subjects
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          chmod +x test/ci/check-conventional-commits.sh
+          if [ -n "${BASE_SHA:-}" ] && git rev-parse --verify -q "${BASE_SHA}^{commit}" >/dev/null; then
+            ./test/ci/check-conventional-commits.sh "${BASE_SHA}..HEAD"
+          else
+            ./test/ci/check-conventional-commits.sh
+          fi
