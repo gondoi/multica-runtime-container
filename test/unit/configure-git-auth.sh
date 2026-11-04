@@ -22,6 +22,8 @@ chmod +x "$SCRIPT"
 export HOME="$WORK/home"
 export GIT_CONFIG_GLOBAL="$WORK/gitconfig"
 export GIT_CREDENTIALS_FILE="$WORK/git-credentials"
+export GIT_AUTH_ENV_FILE="$WORK/git-auth.env"
+export MULTICA_HOME="$WORK/multica-home"
 mkdir -p "$HOME"
 : >"$GIT_CONFIG_GLOBAL"
 : >"$GIT_CREDENTIALS_FILE"
@@ -32,8 +34,11 @@ printf 'dummy-pem\n' >"$WORK/app.pem"
 clear_git_env() {
   unset GITHUB_TOKEN GITHUB_USER GITHUB_PASSWORD GITHUB_HOST \
     GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY GITHUB_APP_PRIVATE_KEY_FILE \
-    GITLAB_TOKEN GITLAB_HOST GITEA_TOKEN GITEA_HOST GITEA_USER GH_TOKEN
+    GITLAB_TOKEN GITLAB_HOST GITEA_TOKEN GITEA_HOST GITEA_USER GH_TOKEN GH_HOST \
+    GITHUB_AUTH_TIER
 }
+
+gh_env() { cat "$GIT_AUTH_ENV_FILE" 2>/dev/null || true; }
 
 method_of() {
   # Usage: method_of [VAR=value ...] → resolved tier (app|token|password|none)
@@ -184,6 +189,89 @@ if run_script GITLAB_TOKEN=glpat_unit; then
 else
   bad "GitLab-only path exited non-zero"
   sed -n 1,10p "$WORK/out" >&2
+fi
+
+echo "==> gh CLI auth view (git-auth.env)"
+
+# PAT tier seeds GH_TOKEN/GITHUB_TOKEN for gh; default host → no GH_HOST.
+: >"$GIT_CREDENTIALS_FILE"
+if run_script GITHUB_TOKEN=ghp_gh_env; then
+  env_dump="$(gh_env)"
+  if printf '%s\n' "$env_dump" | grep -qx "GH_TOKEN=ghp_gh_env" \
+    && printf '%s\n' "$env_dump" | grep -qx "GITHUB_TOKEN=ghp_gh_env" \
+    && ! printf '%s\n' "$env_dump" | grep -q '^GH_HOST='; then
+    ok "PAT tier: git-auth.env carries GH_TOKEN/GITHUB_TOKEN, no GH_HOST"
+  else
+    bad "PAT tier: unexpected git-auth.env: $env_dump"
+  fi
+  if [ "$(stat -c '%a' "$GIT_AUTH_ENV_FILE")" = 600 ]; then
+    ok "PAT tier: git-auth.env is 0600"
+  else
+    bad "PAT tier: git-auth.env mode is $(stat -c '%a' "$GIT_AUTH_ENV_FILE") not 600"
+  fi
+  if grep -qF 'ghp_gh_env' "$WORK/out"; then
+    bad "PAT tier: token leaked to script output"
+  else
+    ok "PAT tier: token never logged"
+  fi
+else
+  bad "PAT tier (gh env) exited non-zero"
+  sed -n 1,10p "$WORK/out" >&2
+fi
+
+# Password tier has no token for gh (gh cannot use a password): env file stays empty.
+: >"$GIT_CREDENTIALS_FILE"
+if run_script GITHUB_HOST=ghes.unit.invalid GITHUB_USER=agent GITHUB_PASSWORD=pw; then
+  if [ ! -s "$GIT_AUTH_ENV_FILE" ] && grep -q 'gh CLI has no token for this tier' "$WORK/out"; then
+    ok "password tier: no gh token seeded, log says gh is unauthenticated"
+  else
+    bad "password tier: unexpected git-auth.env: $(gh_env)"
+  fi
+else
+  bad "password tier (gh env) exited non-zero"
+  sed -n 1,10p "$WORK/out" >&2
+fi
+
+echo "==> GITHUB_AUTH_TIER override"
+# Forced PAT wins even though App credentials are complete.
+: >"$GIT_CREDENTIALS_FILE"
+if run_script GITHUB_AUTH_TIER=token GITHUB_APP_ID=42 GITHUB_APP_INSTALLATION_ID=99 \
+  GITHUB_APP_PRIVATE_KEY_FILE="$WORK/app.pem" GITHUB_TOKEN=ghp_forced; then
+  if [ "$(creds)" = "https://x-access-token:ghp_forced@github.com" ] \
+    && grep -q 'forced by GITHUB_AUTH_TIER' "$WORK/out"; then
+    ok "GITHUB_AUTH_TIER=token: PAT used despite complete App tier"
+  else
+    bad "GITHUB_AUTH_TIER=token: wrong result ($(creds))"
+  fi
+else
+  bad "GITHUB_AUTH_TIER=token exited non-zero"
+  sed -n 1,10p "$WORK/out" >&2
+fi
+
+# Forcing an incomplete tier is a hard error, never a silent fallback to PAT.
+: >"$GIT_CREDENTIALS_FILE"
+if run_script GITHUB_AUTH_TIER=app GITHUB_TOKEN=ghp_present; then
+  bad "GITHUB_AUTH_TIER=app without App creds should exit non-zero"
+else
+  if grep -q 'forced but that tier is incomplete' "$WORK/out" \
+    && [ ! -s "$GIT_CREDENTIALS_FILE" ]; then
+    ok "incomplete forced tier: fatal, no fallback to configured PAT"
+  else
+    bad "incomplete forced tier: wrong failure output"
+    sed -n 1,10p "$WORK/out" >&2
+  fi
+fi
+
+# Unknown tier value is rejected with the allowed set.
+if run_script GITHUB_AUTH_TIER=oauth GITHUB_TOKEN=ghp_present; then
+  bad "GITHUB_AUTH_TIER=oauth should exit non-zero"
+else
+  if grep -q "is invalid; use app, token, or password" "$WORK/out"; then
+    ok "invalid GITHUB_AUTH_TIER: actionable fatal"
+  else
+    bad "invalid GITHUB_AUTH_TIER: wrong failure output"
+    sed -n 1,10p "$WORK/out" >&2
+  fi
 fi
 
 echo

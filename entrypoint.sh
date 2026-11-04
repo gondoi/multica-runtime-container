@@ -50,6 +50,7 @@ require_bin() {
 
 require_bin multica
 require_bin cursor-agent
+require_bin gh
 require_bin git
 require_bin jq
 require_bin curl
@@ -81,6 +82,17 @@ fi
 
 # ── 4. Git credential helper (hard-fail if helper cannot configure) ───────
 /usr/local/bin/configure-git-auth.sh
+
+# gh CLI reads GH_TOKEN/GITHUB_TOKEN (+ GH_HOST for GHES) from the daemon
+# environment. configure-git-auth.sh writes them to a 0600 file so the token is
+# never logged; source it here to hand them to the daemon and child tasks.
+GIT_AUTH_ENV="${MULTICA_HOME:-$HOME/.multica}/git-auth.env"
+if [ -r "$GIT_AUTH_ENV" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$GIT_AUTH_ENV"
+  set +a
+fi
 
 # Export Cursor key for cursor-agent (Secret / env-file / file-mount parity).
 export CURSOR_API_KEY

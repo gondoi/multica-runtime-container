@@ -29,6 +29,7 @@ GitHub Actions (`.github/workflows/docker-publish.yml`) builds **linux/amd64 + l
 | `cursor-agent` | First agent provider (Cursor) |
 | `asdf` | Versioned tool plugins (languages / CLIs) on the workspaces volume |
 | `git`, `openssh-client`, `jq`, `curl`, `procps` | Checkout, scripting, readiness probes |
+| `gh` (GitHub CLI) | Agent tooling (`gh pr create`, `gh api`, `gh run`); authenticates from the resolved tier — App tier re-mints per invocation |
 | `tini` | PID 1 — reaps orphans, forwards signals |
 | non-root `agent` user | Default runtime identity |
 | `/usr/local/bin/ready.sh` | Shallow Ready probe (daemon up — not full inventory) |
@@ -42,7 +43,7 @@ Order:
 1. Source config (`.env` / Secret env-file mounts)
 2. Materialize Secret-projected Multica home (`config.json` + `daemon.id`) into ephemeral `~/.multica`; load Cursor/git token (and optional GitHub App) files
 3. Hard gates — required binaries (`multica`, `cursor-agent`, `git`, `jq`, `curl`, `asdf`, `openssl`) and secrets (Multica auth, `CURSOR_API_KEY`, forge token **or** GitHub App credentials **or** GitHub Enterprise Server password pair)
-4. Configure git HTTPS credential helper (static store and/or GitHub App installation-token helper), resolving GitHub auth as **App → PAT → password**
+4. Configure git HTTPS credential helper (static store and/or GitHub App installation-token helper), resolving GitHub auth as **App → PAT → password**; seed `GH_TOKEN` in the daemon environment so the `gh` CLI is authenticated too
 5. `multica login` (token refresh) → **re-pin workspace** (login can clobber `workspace_id`) → `exec multica daemon start --foreground`
 
 **Ready** = daemon is up after gates. **Crash** = missing secret/binary/git-auth (non-zero exit → CrashLoop).
@@ -70,18 +71,28 @@ Provide **either** a static forge token, **or** the GitHub App trio, **or** a GH
 
 ### GitHub auth precedence (App > PAT > password)
 
-`bin/configure-git-auth.sh` resolves exactly one GitHub tier — the first **complete** one wins:
+Tiers are ordered **most → least secure for managed credentials**. `bin/configure-git-auth.sh` resolves exactly one GitHub tier — the first **complete** one wins:
 
-| Tier | Credentials | Result |
-| --- | --- | --- |
-| 1 · App | `GITHUB_APP_ID` + `GITHUB_APP_INSTALLATION_ID` + PEM | live credential helper; remints installation tokens before the ~1h expiry |
-| 2 · PAT | `GITHUB_TOKEN` | static `~/.git-credentials` entry, username `GITHUB_USER` (default `x-access-token`) |
-| 3 · Password | `GITHUB_USER` + `GITHUB_PASSWORD` | static `~/.git-credentials` entry, percent-encoded (git decodes on read) |
+| Tier | Credentials | Result | gh CLI |
+| --- | --- | --- | --- |
+| 1 · App (best) | `GITHUB_APP_ID` + `GITHUB_APP_INSTALLATION_ID` + PEM | live credential helper; remints installation tokens before the ~1h expiry | `gh` wrapper re-mints per invocation — never goes stale |
+| 2 · PAT | `GITHUB_TOKEN` | static `~/.git-credentials` entry, username `GITHUB_USER` (default `x-access-token`) | `GH_TOKEN` in the daemon env |
+| 3 · Password (fallback) | `GITHUB_USER` + `GITHUB_PASSWORD` | static `~/.git-credentials` entry, percent-encoded (git decodes on read) | unauthenticated — gh has no password auth; git still works |
 
 - An **incomplete** higher tier falls through: App ID + installation ID without a PEM → PAT → password.
+- **Force a tier** with `GITHUB_AUTH_TIER=app|token|password` when more than one is configured (e.g. App present but you want to test a PAT). A forced tier that is incomplete is a hard boot error — never a silent fallback.
 - **github.com removed password (basic) auth for git-over-HTTPS in Aug 2021.** A password-only config pointed at `github.com` therefore **hard-fails at boot** with an actionable message instead of writing credentials that clone would reject. Set `GITHUB_HOST` to a GitHub Enterprise Server host (e.g. `ghe.example.com`) to use tier 3; the App tier then derives its API base as `https://<host>/api/v3`, and `GITHUB_API_URL` still overrides.
 - `GITHUB_HOST` selects the host for all three GitHub tiers (not GitHub Enterprise-aware for other forges — GitLab/Gitea settings are independent).
-- Boot logs the chosen tier (`git HTTPS: ... configured`) and never echoes `GITHUB_PASSWORD` or the App PEM.
+- Boot logs the chosen tier (`git HTTPS: GitHub auth tier=…`) and never echoes `GITHUB_PASSWORD`, the PAT, or the App PEM.
+
+### `gh` CLI auth
+
+`gh` is installed (`/usr/local/bin/gh-real`) behind a thin wrapper (`/usr/local/bin/gh`, [`bin/gh-wrapper.sh`](bin/gh-wrapper.sh)). `configure-git-auth.sh` writes `~/.multica/git-auth.env` (0600) with `GH_TOKEN`/`GITHUB_TOKEN`/`GH_HOST` for the resolved tier and the entrypoint exports it, so the daemon and the tasks it spawns inherit gh auth without the token ever being logged. There is no interactive `gh auth login`: the container is headless and `~` is ephemeral, so state is re-derived from the tier at every boot instead of persisted.
+
+- App tier: the wrapper **re-mints the installation token on each `gh` call**, so a long-running container never hits the ~1h expiry (`gh --version`/`help` skip the mint). If a mint fails the command runs with the boot token rather than erroring.
+- PAT tier: `GH_TOKEN` is static, like the git credential.
+- Password tier: gh stays unauthenticated (gh has no password auth); use tier 1 or 2 when agents need `gh pr create`/`gh api`.
+- SSH/deploy keys are deliberately **not** a tier — git auth here is HTTPS-only.
 
 ### GitHub App git auth (no PAT)
 
@@ -107,7 +118,7 @@ Smoke that baseline binaries exist:
 
 ```bash
 docker run --rm --entrypoint /bin/bash multica-runtime:local -lc \
-  'command -v multica cursor-agent asdf git ssh jq curl tini ready.sh materialize-secrets.sh'
+  'command -v multica cursor-agent gh asdf git ssh jq curl tini ready.sh materialize-secrets.sh && gh --version'
 ```
 
 ### Compose (laptop parity)

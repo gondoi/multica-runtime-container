@@ -48,7 +48,7 @@ docker build -t "$IMAGE" .
 chmod +x "$STUB" "$ROOT/entrypoint.sh" \
   "$ROOT/bin/configure-git-auth.sh" "$ROOT/bin/materialize-secrets.sh" \
   "$ROOT/bin/mint-github-app-token.sh" "$ROOT/bin/github-app-credential-helper.sh" \
-  "$ROOT/bin/ready.sh"
+  "$ROOT/bin/gh-wrapper.sh" "$ROOT/bin/ready.sh"
 
 run_crash() {
   local name="$1" envfile="$2"
@@ -155,6 +155,27 @@ if docker logs "$cname_proj" 2>&1 | grep -q 'gates passed'; then
 else
   bad "projected Cursor key path did not reach gates-passed"
   docker logs "$cname_proj" >&2 || true
+fi
+
+# gh CLI: shipped in the image and authenticated from the daemon environment
+# (configure-git-auth.sh seeds git-auth.env; entrypoint exports it).
+if docker exec "$cname_proj" gh --version >/dev/null 2>&1; then
+  ok "gh CLI present in image (wrapper → gh-real, no mint without App creds)"
+else
+  bad "gh CLI missing from image"
+fi
+if docker exec "$cname_proj" grep -qx 'GH_TOKEN=ghp_boot_seam_projected' /home/agent/.multica/git-auth.env; then
+  ok "git-auth.env seeds GH_TOKEN for gh from the resolved tier"
+else
+  bad "git-auth.env missing GH_TOKEN seed"
+  docker exec "$cname_proj" cat /home/agent/.multica/git-auth.env >&2 || true
+fi
+daemon_pid="$(docker exec "$cname_proj" pgrep -f 'sleep infinity' 2>/dev/null | head -1 || true)"
+if [ -n "$daemon_pid" ] \
+  && docker exec "$cname_proj" bash -c "tr '\\0' '\\n' < /proc/${daemon_pid}/environ | grep -qx 'GH_TOKEN=ghp_boot_seam_projected'"; then
+  ok "daemon environment carries GH_TOKEN (gh usable inside tasks)"
+else
+  bad "daemon environment is missing GH_TOKEN"
 fi
 
 # Compose contract: no Multica-home named volume at ~/.multica.

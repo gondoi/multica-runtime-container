@@ -3,7 +3,8 @@
 # Writes ~/.git-credentials from env tokens so Multica lazy checkout can use
 # HTTPS without interactive prompts.
 #
-# GitHub auth tiers — resolved in this order, first COMPLETE tier wins:
+# GitHub auth tiers — resolved in this order, first COMPLETE tier wins (most →
+# least secure for managed credentials):
 #   1. app       GITHUB_APP_ID + GITHUB_APP_INSTALLATION_ID + PEM
 #                → live credential helper, remints every ~1h installation token
 #   2. token     GITHUB_TOKEN (static PAT / fine-grained token)
@@ -13,9 +14,17 @@
 #
 # Env:
 #   GITHUB_HOST                  → GitHub host for tiers 1-3 (default github.com)
+#   GITHUB_AUTH_TIER             → force one tier (app|token|password). Unset =
+#                                  automatic precedence; a forced but incomplete
+#                                  tier is a hard error, never a silent fallback.
 #   GITLAB_TOKEN + GITLAB_HOST   → GitLab (default host gitlab.com)
 #   GITEA_TOKEN  + GITEA_HOST    → Gitea/Forgejo (host required)
 #   GITEA_USER                   → optional username (default oauth2)
+#
+# Also writes ${MULTICA_HOME:-$HOME/.multica}/git-auth.env (0600) with
+# GH_TOKEN/GITHUB_TOKEN/GH_HOST so the daemon environment — and therefore the
+# `gh` CLI — is authenticated for the resolved tier without ever logging the
+# token. The entrypoint sources that file.
 #
 # Exit 1 when no forge tokens / App credentials are present (boot hard-fail).
 #
@@ -26,6 +35,7 @@
 set -euo pipefail
 
 CRED_FILE="${GIT_CREDENTIALS_FILE:-$HOME/.git-credentials}"
+GH_ENV_FILE="${GIT_AUTH_ENV_FILE:-${MULTICA_HOME:-$HOME/.multica}/git-auth.env}"
 have_git_creds=0
 
 log() { printf '%s\n' "$*" >&2; }
@@ -62,6 +72,40 @@ github_auth_method() {
   fi
 }
 
+github_tier_complete() {
+  case "$1" in
+    app) github_app_complete ;;
+    token) [ -n "${GITHUB_TOKEN:-}" ] ;;
+    password) github_password_complete ;;
+    *) return 1 ;;
+  esac
+}
+
+github_tier_requirements() {
+  case "$1" in
+    app) printf 'GITHUB_APP_ID + GITHUB_APP_INSTALLATION_ID + private key PEM' ;;
+    token) printf 'GITHUB_TOKEN' ;;
+    password) printf 'GITHUB_USER + GITHUB_PASSWORD' ;;
+  esac
+}
+
+# Resolved tier: explicit GITHUB_AUTH_TIER wins over automatic precedence.
+resolve_github_method() {
+  local forced
+  forced="$(printf '%s' "${GITHUB_AUTH_TIER:-}" | tr '[:upper:]' '[:lower:]')"
+  if [ -z "$forced" ]; then
+    github_auth_method
+    return 0
+  fi
+  case "$forced" in
+    app|token|password) ;;
+    *) die "GITHUB_AUTH_TIER='${GITHUB_AUTH_TIER}' is invalid; use app, token, or password" ;;
+  esac
+  github_tier_complete "$forced" \
+    || die "GITHUB_AUTH_TIER=${forced} was forced but that tier is incomplete: needs $(github_tier_requirements "$forced")"
+  printf '%s\n' "$forced"
+}
+
 uri_encode() {
   # $1=raw → RFC 3986 percent-encoded; git percent-decodes credential URLs.
   if command -v jq >/dev/null 2>&1; then
@@ -78,6 +122,25 @@ add_git_cred() {
   have_git_creds=1
 }
 
+# gh CLI auth view for the daemon environment. Written 0600, sourced by the
+# entrypoint; nothing here is ever logged. Password tier has no token to seed.
+write_gh_env() {
+  # $1=token ("" for the password tier)
+  local token="${1:-}" host
+  host="$(github_host)"
+  mkdir -p "$(dirname "$GH_ENV_FILE")"
+  : >"$GH_ENV_FILE"
+  chmod 600 "$GH_ENV_FILE"
+  [ -n "$token" ] || return 0
+  {
+    printf 'GH_TOKEN=%q\n' "$token"
+    printf 'GITHUB_TOKEN=%q\n' "$token"
+    if [ "$host" != "github.com" ]; then
+      printf 'GH_HOST=%q\n' "$host"
+    fi
+  } >"$GH_ENV_FILE"
+}
+
 # Tier 1: GitHub App — live credential helper remints (~1h token lifetime).
 # Do NOT put the App host into the store file — store would return a stale seed
 # and skip the helper. Seed GH_TOKEN for non-git tools (gh/curl) only.
@@ -92,7 +155,8 @@ configure_github_app() {
   git config --global --unset-all "credential.https://${host}.helper" 2>/dev/null || true
   git config --global "credential.https://${host}.helper" \
     '!/usr/local/bin/github-app-credential-helper.sh'
-  log "git HTTPS: GitHub App installation helper configured (host=${host})"
+  write_gh_env "$token"
+  log "git HTTPS: GitHub App installation helper configured (host=${host}); gh CLI auth via per-invocation mint"
 }
 
 # Tier 2: static PAT / fine-grained token.
@@ -100,7 +164,8 @@ configure_github_token() {
   local host
   host="$(github_host)"
   add_git_cred "$host" "${GITHUB_USER:-x-access-token}" "${GITHUB_TOKEN:-}"
-  log "git HTTPS: static GITHUB_TOKEN configured (host=${host})"
+  write_gh_env "${GITHUB_TOKEN:-}"
+  log "git HTTPS: static GITHUB_TOKEN configured (host=${host}); gh CLI auth via GH_TOKEN"
 }
 
 # Tier 3: username + password (GitHub Enterprise Server; see header note).
@@ -113,21 +178,24 @@ configure_github_password() {
       ;;
   esac
   add_git_cred "$host" "$(uri_encode "$GITHUB_USER")" "$(uri_encode "$GITHUB_PASSWORD")"
-  log "git HTTPS: GitHub password auth configured (host=${host}, lowest-priority tier)"
+  write_gh_env ""
+  log "git HTTPS: GitHub password auth configured (host=${host}, lowest-priority tier); gh CLI has no token for this tier"
 }
 
 main() {
   local method
   : >"$CRED_FILE"
   chmod 600 "$CRED_FILE"
+  write_gh_env ""
 
-  method="$(github_auth_method)"
+  method="$(resolve_github_method)"
   case "$method" in
     app) configure_github_app ;;
     token) configure_github_token ;;
     password) configure_github_password ;;
-    *) : ;;
+    *) write_gh_env "" ;;
   esac
+  [ "$method" = none ] || log "git HTTPS: GitHub auth tier=${method}${GITHUB_AUTH_TIER:+ (forced by GITHUB_AUTH_TIER)}"
 
   add_git_cred "${GITLAB_HOST:-gitlab.com}" "oauth2" "${GITLAB_TOKEN:-}"
   add_git_cred "${GITEA_HOST:-}" "${GITEA_USER:-oauth2}" "${GITEA_TOKEN:-}"

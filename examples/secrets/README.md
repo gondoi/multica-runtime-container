@@ -27,7 +27,10 @@ secrets/
 ```
 
 GitHub tiers resolve **App > PAT > password** (first complete one wins; an
-incomplete App config falls through to the next tier).
+incomplete App config falls through to the next tier). Force one with
+`GITHUB_AUTH_TIER=app|token|password` when several are configured. The resolved
+tier also seeds `gh` CLI auth via `~/.multica/git-auth.env` (0600, never logged);
+no extra Secret is needed for `gh`.
 
 ## Compose
 

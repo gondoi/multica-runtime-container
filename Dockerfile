@@ -15,6 +15,8 @@ ARG ASDF_VERSION=v0.20.2
 # Pin Multica CLI + Cursor agent for reproducible builds; bump deliberately.
 ARG MULTICA_VERSION=0.8.0
 ARG CURSOR_AGENT_VERSION=2026.10.22-27dcf5f
+# GitHub CLI (pinned). Installed as gh-real; /usr/local/bin/gh is bin/gh-wrapper.sh.
+ARG GH_VERSION=2.103.3
 
 # ── System deps (language-agnostic) ──────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -79,18 +81,32 @@ RUN arch="$(dpkg --print-architecture)" && \
     ln -sf /home/agent/.local/share/cursor-agent/versions/${CURSOR_AGENT_VERSION}/cursor-agent /usr/local/bin/agent && \
     chown -R agent:agent /home/agent/.local
 
+# ── GitHub CLI (pinned release tarball; wrapper installed below) ─────────
+RUN arch="$(dpkg --print-architecture)" && \
+    case "$arch" in \
+      amd64) gh_arch=amd64 ;; \
+      arm64) gh_arch=arm64 ;; \
+      *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${gh_arch}.tar.gz" \
+      | tar -xz -C /usr/local/bin --strip-components=2 "gh_${GH_VERSION}_linux_${gh_arch}/bin/gh" && \
+    mv /usr/local/bin/gh /usr/local/bin/gh-real && \
+    chmod +x /usr/local/bin/gh-real && \
+    /usr/local/bin/gh-real --version
+
 # ── Forge HTTPS helper + GitHub App mint + secret materialize + ready ────
 COPY bin/configure-git-auth.sh /usr/local/bin/configure-git-auth.sh
 COPY bin/mint-github-app-token.sh /usr/local/bin/mint-github-app-token.sh
 COPY bin/github-app-credential-helper.sh /usr/local/bin/github-app-credential-helper.sh
 COPY bin/materialize-secrets.sh /usr/local/bin/materialize-secrets.sh
 COPY bin/ready.sh /usr/local/bin/ready.sh
+COPY bin/gh-wrapper.sh /usr/local/bin/gh
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /usr/local/bin/configure-git-auth.sh \
       /usr/local/bin/mint-github-app-token.sh \
       /usr/local/bin/github-app-credential-helper.sh \
       /usr/local/bin/materialize-secrets.sh \
-      /usr/local/bin/ready.sh /entrypoint.sh && \
+      /usr/local/bin/gh /usr/local/bin/ready.sh /entrypoint.sh && \
     chown agent:agent /entrypoint.sh
 
 # asdf data dir on the workspaces volume path by default; plugins installable.
