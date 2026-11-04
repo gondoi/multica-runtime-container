@@ -1,10 +1,12 @@
 # Multica runtime home-base — compose / laptop parity with the K8s Secret
 # mount contract (no cluster required).
 #
-#   mkdir -p secrets/multica-home secrets/cursor secrets/git
+#   mkdir -p secrets/multica-home secrets/cursor secrets/claude secrets/git
 #   cp examples/secrets/multica-home/config.json.example secrets/multica-home/config.json
 #   cp examples/secrets/multica-home/daemon.id.example   secrets/multica-home/daemon.id
 #   printf '%s' "$CURSOR_API_KEY" > secrets/cursor/CURSOR_API_KEY
+#   # optional Claude Code harness (MULTICA_AGENT_CLI=claude):
+#   printf '%s' "$ANTHROPIC_API_KEY" > secrets/claude/ANTHROPIC_API_KEY
 #   printf '%s' "$GITHUB_TOKEN"   > secrets/git/GITHUB_TOKEN
 #   # optional: still use .env for non-secret knobs (URLs, workspace id)
 #   cp .env.example .env
@@ -43,6 +45,14 @@ services:
       # Secret dirs match K8s projected mounts (see examples/k8s/).
       MULTICA_HOME_SECRET_DIR: /run/secrets/multica-home
       CURSOR_API_KEY_FILE: /run/secrets/cursor/CURSOR_API_KEY
+      # Claude Code harness credentials (only read when MULTICA_AGENT_CLI
+      # includes claude; one of the three satisfies the gate).
+      ANTHROPIC_API_KEY_FILE: /run/secrets/claude/ANTHROPIC_API_KEY
+      CLAUDE_CODE_OAUTH_TOKEN_FILE: /run/secrets/claude/CLAUDE_CODE_OAUTH_TOKEN
+      ANTHROPIC_AUTH_TOKEN_FILE: /run/secrets/claude/ANTHROPIC_AUTH_TOKEN
+      # Agent CLI harnesses provisioned + gated at boot: cursor | claude |
+      # cursor,claude. Default cursor = pre-Claude boot contract unchanged.
+      MULTICA_AGENT_CLI: ${MULTICA_AGENT_CLI:-cursor}
       GITHUB_TOKEN_FILE: /run/secrets/git/GITHUB_TOKEN
       # AWS auth: prefer IRSA/instance-profile where available (README tiers).
       # Do not set AWS_PROFILE — callers pass --profile explicitly.
@@ -55,6 +65,7 @@ services:
       # Secret projection parity (bind-mount local secrets/ tree).
       - ./secrets/multica-home:/run/secrets/multica-home:ro
       - ./secrets/cursor:/run/secrets/cursor:ro
+      - ./secrets/claude:/run/secrets/claude:ro
       - ./secrets/git:/run/secrets/git:ro
       # Optional — AWS auth tier 3 static keys (mounted config/credentials).
       # - ./secrets/aws:/run/secrets/aws:ro

@@ -3,7 +3,8 @@
 #   1. Source config / helpers
 #   2. Materialize Secret-projected Multica home + Cursor/git tokens
 #   2a. Wire optional AWS ConfigMaps + SSO cache onto workspaces PVC
-#   3. Hard-fail gates (required binaries + Multica/Cursor/git-auth secrets)
+#   3. Hard-fail gates (required binaries + Multica/git-auth secrets, plus the
+#      agent CLI harness(es) named by MULTICA_AGENT_CLI)
 #   4. Configure git HTTPS credential helper
 #   4b. Validate MULTICA_LOG_LEVEL + export it (log-stream filter, see below)
 #   4c. Report the resolved AWS credential source (informational; no creds)
@@ -16,7 +17,8 @@
 # (or compose bind-mount of the same layout). There is NO Multica-home PVC —
 # only the workspaces volume is durable (also holds AWS SSO cache).
 #
-# Missing Multica/Cursor/git secrets or binaries → non-zero exit (CrashLoop).
+# Missing Multica/git secrets, a missing selected-harness binary/credential, or
+# an unknown MULTICA_AGENT_CLI → non-zero exit (CrashLoop).
 # Missing AWS ConfigMaps → continue degraded (daemon still Ready).
 # Scratch shell: docker run --entrypoint /bin/bash ...
 set -euo pipefail
@@ -72,7 +74,6 @@ require_bin() {
 }
 
 require_bin multica
-require_bin cursor-agent
 require_bin gh
 require_bin git
 require_bin jq
@@ -82,10 +83,20 @@ require_bin aws
 require_bin aws-sso
 require_bin awk
 require_bin grep
+# cursor-agent / claude are gated per selected harness in 3b (agent-harness.sh)
+# so a Claude-only deployment is not forced to hold a Cursor key, and vice versa.
 
 # ── 3b. Hard gates: secrets (daemon Ready contract) ───────────────────────
 [ -n "${MULTICA_TOKEN:-}" ] || die "Multica auth required: set MULTICA_TOKEN or project config.json under ${MULTICA_HOME_SECRET_DIR:-/run/secrets/multica-home}"
-[ -n "${CURSOR_API_KEY:-}" ] || die "CURSOR_API_KEY is required (env or ${CURSOR_API_KEY_FILE:-/run/secrets/cursor/CURSOR_API_KEY})"
+
+# Agent CLI harness gate: every harness named by MULTICA_AGENT_CLI must have
+# its binary on PATH and a credential in env (Secret files are lifted into env
+# by materialize-secrets.sh). Default MULTICA_AGENT_CLI=cursor keeps the exact
+# pre-existing boot contract for Cursor-only deployments.
+# shellcheck disable=SC1091
+source /usr/local/bin/agent-harness.sh
+harness_gate || die "agent CLI harness gate failed (MULTICA_AGENT_CLI='${MULTICA_AGENT_CLI:-cursor}')"
+
 [ -f "${MULTICA_HOME:-$HOME/.multica}/daemon.id" ] || [ -n "${MULTICA_DAEMON_ID:-}" ] \
   || die "daemon.id required: project under ${MULTICA_HOME_SECRET_DIR:-/run/secrets/multica-home} or set MULTICA_DAEMON_ID"
 
@@ -133,6 +144,9 @@ fi
 
 # Export Cursor key for cursor-agent (Secret / env-file / file-mount parity).
 export CURSOR_API_KEY
+# ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_AUTH_TOKEN are
+# exported by materialize-secrets.sh and inherited by the daemon, which passes
+# them to the Claude Code CLI it spawns. Never logged.
 
 # Resolve workspace ref (UUID / slug / display name) → UUID.
 # Returns empty string if unresolved (caller decides whether to die).

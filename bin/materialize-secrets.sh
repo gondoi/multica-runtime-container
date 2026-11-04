@@ -11,6 +11,9 @@
 #   ${MULTICA_HOME_SECRET_DIR:-/run/secrets/multica-home}/config.json
 #   ${MULTICA_HOME_SECRET_DIR:-/run/secrets/multica-home}/daemon.id
 #   ${CURSOR_API_KEY_FILE:-/run/secrets/cursor/CURSOR_API_KEY}
+#   ${ANTHROPIC_API_KEY_FILE:-/run/secrets/claude/ANTHROPIC_API_KEY}
+#   ${CLAUDE_CODE_OAUTH_TOKEN_FILE:-/run/secrets/claude/CLAUDE_CODE_OAUTH_TOKEN}
+#   ${ANTHROPIC_AUTH_TOKEN_FILE:-/run/secrets/claude/ANTHROPIC_AUTH_TOKEN}
 #   ${GITHUB_TOKEN_FILE:-/run/secrets/git/GITHUB_TOKEN}
 #   ${GITHUB_USER_FILE:-/run/secrets/git/GITHUB_USER}
 #   ${GITHUB_PASSWORD_FILE:-/run/secrets/git/GITHUB_PASSWORD}
@@ -79,6 +82,14 @@ fi
 
 # ── Cursor + git token / GitHub App files ─────────────────────────────────
 read_secret_file CURSOR_API_KEY "${CURSOR_API_KEY_FILE:-/run/secrets/cursor/CURSOR_API_KEY}"
+# ── Claude Code harness credentials (one of the three satisfies the gate) ──
+# API key (long-lived secret) or OAuth token from `claude setup-token`; the
+# third is the bearer token used with a gateway (pair with ANTHROPIC_BASE_URL,
+# which is non-secret plain env, not a file). Lifted into env only — the daemon
+# passes them to the Claude Code CLI it spawns and they are never logged.
+read_secret_file ANTHROPIC_API_KEY "${ANTHROPIC_API_KEY_FILE:-/run/secrets/claude/ANTHROPIC_API_KEY}"
+read_secret_file CLAUDE_CODE_OAUTH_TOKEN "${CLAUDE_CODE_OAUTH_TOKEN_FILE:-/run/secrets/claude/CLAUDE_CODE_OAUTH_TOKEN}"
+read_secret_file ANTHROPIC_AUTH_TOKEN "${ANTHROPIC_AUTH_TOKEN_FILE:-/run/secrets/claude/ANTHROPIC_AUTH_TOKEN}"
 read_secret_file GITHUB_TOKEN "${GITHUB_TOKEN_FILE:-/run/secrets/git/GITHUB_TOKEN}"
 # GitHub Enterprise Server password tier (lowest priority) + host selector.
 read_secret_file GITHUB_USER "${GITHUB_USER_FILE:-/run/secrets/git/GITHUB_USER}"

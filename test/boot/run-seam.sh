@@ -8,6 +8,8 @@
 # Covers:
 #   - env-file secrets (override path)
 #   - Secret-projected Multica home + Cursor/git file mounts (K8s parity)
+#   - Agent CLI harness gate: cursor (default) and claude (Secret-projected
+#     credential, binary usable as the non-root user, env reaching the daemon)
 #   - login workspace_id clobber → re-pin from Secret / MULTICA_WORKSPACE slug
 #   - AWS ConfigMap mounts → PVC provider homes; operator-only login guard
 #
@@ -34,6 +36,7 @@ cname_slug=""
 cname_aws=""
 cname_pwd=""
 cname_lvl=""
+cname_claude=""
 
 ok() { printf 'PASS  %s\n' "$*"; pass=$((pass + 1)); }
 bad() { printf 'FAIL  %s\n' "$*"; fail=$((fail + 1)); }
@@ -45,6 +48,7 @@ cleanup() {
   [ -n "$cname_pwd" ] && docker rm -f "$cname_pwd" >/dev/null 2>&1 || true
   [ -n "$cname_lvl" ] && docker rm -f "$cname_lvl" >/dev/null 2>&1 || true
   [ -n "$cname_aws" ] && docker rm -f "$cname_aws" >/dev/null 2>&1 || true
+  [ -n "$cname_claude" ] && docker rm -f "$cname_claude" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -52,6 +56,7 @@ echo "==> Building $IMAGE"
 docker build -t "$IMAGE" .
 
 chmod +x "$STUB" "$ROOT/entrypoint.sh" \
+  "$ROOT/bin/agent-harness.sh" \
   "$ROOT/bin/configure-git-auth.sh" "$ROOT/bin/materialize-secrets.sh" \
   "$ROOT/bin/materialize-aws.sh" "$ROOT/bin/aws-sso-guard.sh" \
   "$ROOT/bin/mint-github-app-token.sh" "$ROOT/bin/github-app-credential-helper.sh" \
@@ -125,6 +130,8 @@ assert_ready_container() {
 echo "==> Crash fixtures (hard-fail secrets)"
 run_crash no-multica "$FIX/crash-no-multica.env"
 run_crash no-cursor "$FIX/crash-no-cursor.env"
+run_crash no-claude-auth "$FIX/crash-no-claude-auth.env"
+run_crash unknown-harness "$FIX/crash-unknown-harness.env"
 run_crash no-git "$FIX/crash-no-git.env"
 run_crash bad-log-level "$FIX/crash-bad-log-level.env"
 run_crash github-password-public "$FIX/crash-github-password-public.env"
@@ -330,6 +337,64 @@ else
   bad "password tier: boot did not log the chosen tier"
 fi
 
+
+echo "==> Happy path — Claude Code harness (Secret-projected credential)"
+cname_claude="multica-boot-seam-claude-$$"
+docker run -d --name "$cname_claude" \
+  --env-file "$FIX/happy-claude.env" \
+  -v "$STUB:/usr/local/bin/multica:ro" \
+  -v "$SECRETS/multica-home:/run/secrets/multica-home:ro" \
+  -v "$SECRETS/claude:/run/secrets/claude:ro" \
+  -v "$SECRETS/git:/run/secrets/git:ro" \
+  "$IMAGE" >/dev/null
+assert_ready_container "$cname_claude" "happy/claude Ready"
+
+# The pinned native binary must actually execute as the non-root agent user on
+# this base image (glibc/lib deps) — the build proves it as root, this proves it
+# for the runtime identity and env.
+if claude_ver="$(docker exec "$cname_claude" claude --version 2>&1)"; then
+  ok "claude CLI runs as non-root agent user ($claude_ver)"
+else
+  bad "claude CLI failed to run in the container: $claude_ver"
+fi
+
+if wait_log "$cname_claude" 'harness claude: ok'; then
+  ok "claude harness gate passed from projected credential file"
+else
+  bad "claude harness gate did not report ok"
+  docker logs "$cname_claude" >&2 || true
+fi
+
+if wait_log "$cname_claude" 'agent harnesses: claude'; then
+  ok "claude-only boot needs no CURSOR_API_KEY (harnesses: claude)"
+else
+  bad "boot did not report the claude-only harness selection"
+  docker logs "$cname_claude" >&2 || true
+fi
+
+# Auth passthrough: the daemon (and therefore every CLI it spawns) inherits the
+# credential — never printed to the boot log.
+claude_daemon_pid="$(docker exec "$cname_claude" pgrep -f 'sleep infinity' 2>/dev/null | head -1 || true)"
+if [ -n "$claude_daemon_pid" ] \
+  && docker exec "$cname_claude" bash -c "tr '\\0' '\\n' < /proc/${claude_daemon_pid}/environ | grep -qx 'ANTHROPIC_API_KEY=sk-ant-boot_seam_claude_fixture'"; then
+  ok "daemon environment carries ANTHROPIC_API_KEY (Claude CLI auth passthrough)"
+else
+  bad "daemon environment is missing ANTHROPIC_API_KEY"
+fi
+
+if [ -n "$claude_daemon_pid" ] \
+  && docker exec "$cname_claude" bash -c "tr '\\0' '\\n' < /proc/${claude_daemon_pid}/environ | grep -qx 'MULTICA_CLAUDE_PATH=/usr/local/bin/claude'" \
+  && docker exec "$cname_claude" bash -c "tr '\\0' '\\n' < /proc/${claude_daemon_pid}/environ | grep -qx 'DISABLE_AUTOUPDATER=1'"; then
+  ok "daemon environment pins MULTICA_CLAUDE_PATH + DISABLE_AUTOUPDATER"
+else
+  bad "daemon environment missing claude path/autoupdater pin"
+fi
+
+if docker logs "$cname_claude" 2>&1 | grep -q 'sk-ant-boot_seam_claude_fixture'; then
+  bad "claude credential leaked into the boot log"
+else
+  ok "claude credential never appears in container logs"
+fi
 
 # Without AWS mounts, daemon still Ready (continue-on-degrade).
 if docker logs "$cname_proj" 2>&1 | grep -q 'AWS profiles: no ConfigMap mounts'; then

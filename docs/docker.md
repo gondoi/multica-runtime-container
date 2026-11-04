@@ -10,7 +10,11 @@ and GitHub auth tiers. This doc only covers the Docker-specific mechanics.
 ### Build
 
 ```bash
+# Both harnesses (default): Cursor + Claude Code
 docker build -t multica-runtime:local .
+
+# Cursor-only, ~330 MB smaller (the claude gate then fails with a clear message)
+docker build --build-arg INSTALL_CLAUDE_CLI=false -t multica-runtime:local-cursor .
 ```
 
 ### Smoke test (no secrets, no daemon)
@@ -19,7 +23,23 @@ Verify the baseline binaries exist without booting the daemon:
 
 ```bash
 docker run --rm --entrypoint /bin/bash multica-runtime:local -lc \
-  'command -v multica cursor-agent gh aws asdf git ssh jq curl tini ready.sh materialize-secrets.sh && gh --version && aws --version'
+  'command -v multica cursor-agent claude gh aws asdf git ssh jq curl tini ready.sh materialize-secrets.sh agent-harness.sh && claude --version && gh --version && aws --version'
+```
+
+### Agent CLI harnesses
+
+`MULTICA_AGENT_CLI` (default `cursor`) decides which harnesses the entrypoint
+provisions and hard-gates — `cursor`, `claude`, or `cursor,claude`. Claude needs
+one of `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_AUTH_TOKEN`;
+Cursor needs `CURSOR_API_KEY`. Each selected harness must have **both** its
+binary and a credential or the container exits non-zero (CrashLoop) with an
+actionable message. Full semantics and the credential-tier risk note:
+[README → Agent CLI harnesses](../README.md#agent-cli-harnesses-multica_agent_cli).
+
+Claude-only compose run (no Cursor key needed):
+
+```bash
+MULTICA_AGENT_CLI=claude docker compose up -d --build
 ```
 
 ### Run with Compose (recommended)
@@ -38,6 +58,16 @@ repo root that mirrors the Kubernetes Secret-mount contract using a local
    # edit secrets/multica-home/config.json with your real workspace_id + token
    printf '%s' "$CURSOR_API_KEY" > secrets/cursor/CURSOR_API_KEY
    printf '%s' "$GITHUB_TOKEN"   > secrets/git/GITHUB_TOKEN
+   ```
+
+   For the Claude Code harness instead of (or alongside) Cursor, also create
+   `secrets/claude/` with **one** credential file and set `MULTICA_AGENT_CLI`:
+
+   ```bash
+   mkdir -p secrets/claude
+   printf '%s' "$ANTHROPIC_API_KEY" > secrets/claude/ANTHROPIC_API_KEY
+   # or: printf '%s' "$CLAUDE_CODE_OAUTH_TOKEN" > secrets/claude/CLAUDE_CODE_OAUTH_TOKEN
+   # then run compose with MULTICA_AGENT_CLI=claude (or cursor,claude)
    ```
 
    To use the GitHub App tier instead of a PAT, drop `secrets/git/GITHUB_TOKEN`

@@ -35,6 +35,20 @@ spec:
               value: /run/secrets/multica-home
             - name: CURSOR_API_KEY_FILE
               value: /run/secrets/cursor/CURSOR_API_KEY
+            # Agent CLI harnesses provisioned + gated at boot: cursor | claude |
+            # cursor,claude. Default cursor = pre-Claude boot contract unchanged.
+            - name: MULTICA_AGENT_CLI
+              value: cursor
+            # Claude Code harness (use with MULTICA_AGENT_CLI=claude or
+            # cursor,claude). One credential key is enough. Requires the
+            # `claude` Secret + volume/mount further down — comment both in if
+            # you add the Secret, or the pod fails to mount.
+            # - name: ANTHROPIC_API_KEY_FILE
+            #   value: /run/secrets/claude/ANTHROPIC_API_KEY
+            # - name: CLAUDE_CODE_OAUTH_TOKEN_FILE
+            #   value: /run/secrets/claude/CLAUDE_CODE_OAUTH_TOKEN
+            # - name: ANTHROPIC_AUTH_TOKEN_FILE
+            #   value: /run/secrets/claude/ANTHROPIC_AUTH_TOKEN
             - name: GITHUB_TOKEN_FILE
               value: /run/secrets/git/GITHUB_TOKEN
             # Optional GitHub App path (org-safe; replaces PAT when mounted):
@@ -85,6 +99,12 @@ spec:
             - name: cursor
               mountPath: /run/secrets/cursor
               readOnly: true
+            # Optional — Claude Code harness credentials (see claude Secret in
+            # secret.example.yaml). Uncomment together with the volume below and
+            # the ANTHROPIC_*_FILE env vars above.
+            # - name: claude
+            #   mountPath: /run/secrets/claude
+            #   readOnly: true
             - name: git
               mountPath: /run/secrets/git
               readOnly: true
@@ -137,6 +157,16 @@ spec:
             items:
               - key: CURSOR_API_KEY
                 path: CURSOR_API_KEY
+        # Optional — Claude Code harness. Mount ONLY the credential key you
+        # actually put in the Secret (the kubelet fails the mount on a missing
+        # key). Then uncomment the matching *_FILE env var and the `claude`
+        # volumeMount above.
+        # - name: claude
+        #   secret:
+        #     secretName: multica-runtime-claude
+        #     items:
+        #       - key: ANTHROPIC_API_KEY
+        #         path: ANTHROPIC_API_KEY
         - name: git
           secret:
             secretName: multica-runtime-git

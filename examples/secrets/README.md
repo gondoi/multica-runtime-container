@@ -12,6 +12,10 @@ secrets/
     daemon.id       # stable daemon identity (UUID or name)
   cursor/
     CURSOR_API_KEY  # single-line Cursor API key
+  claude/           # only when MULTICA_AGENT_CLI includes `claude`
+    ANTHROPIC_API_KEY          # option 1: API key
+    # CLAUDE_CODE_OAUTH_TOKEN  # option 2: from `claude setup-token`
+    # ANTHROPIC_AUTH_TOKEN     # option 3: gateway bearer token (+ ANTHROPIC_BASE_URL env)
   git/
     GITHUB_TOKEN    # Option A: static PAT (and/or GITLAB_TOKEN, GITEA_TOKEN)
     # Option B: GitHub App (org-safe; use instead of or preferred over PAT)
@@ -32,6 +36,15 @@ incomplete App config falls through to the next tier). Force one with
 tier also seeds `gh` CLI auth via `~/.multica/git-auth.env` (0600, never logged);
 no extra Secret is needed for `gh`.
 
+## Agent CLI harnesses
+
+`MULTICA_AGENT_CLI` (default `cursor`) names the harnesses this container
+provisions and hard-gates: `cursor`, `claude`, or `cursor,claude`. Claude needs
+**one** of `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_AUTH_TOKEN`;
+Cursor needs `CURSOR_API_KEY`. A selected harness with no credential is a hard
+boot failure (CrashLoop), not a silent fallback — see the root README
+[Agent CLI harnesses](../README.md#agent-cli-harnesses-multica_agent_cli).
+
 ## Compose
 
 ```bash
@@ -40,6 +53,9 @@ cp examples/secrets/multica-home/config.json.example secrets/multica-home/config
 cp examples/secrets/multica-home/daemon.id.example   secrets/multica-home/daemon.id
 # edit config.json (server/app URLs, workspace_id, token)
 printf '%s' 'cursor_…' > secrets/cursor/CURSOR_API_KEY
+# Optional — Claude Code harness (needs MULTICA_AGENT_CLI=claude or cursor,claude):
+# mkdir -p secrets/claude
+# printf '%s' 'sk-ant-…' > secrets/claude/ANTHROPIC_API_KEY
 # Option A — PAT:
 printf '%s' 'ghp_…'    > secrets/git/GITHUB_TOKEN
 # Option B — GitHub App (omit GITHUB_TOKEN when switching fully):

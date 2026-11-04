@@ -7,7 +7,8 @@ No Ingress.
 | Mount | Path in pod | Role |
 | --- | --- | --- |
 | Secret `multica-runtime-home` | `/run/secrets/multica-home/{config.json,daemon.id}` | Multica identity (no Multica-home PVC) |
-| Secret `multica-runtime-cursor` | `/run/secrets/cursor/CURSOR_API_KEY` | Cursor agent |
+| Secret `multica-runtime-cursor` | `/run/secrets/cursor/CURSOR_API_KEY` | Cursor harness (`MULTICA_AGENT_CLI` includes `cursor`, the default) |
+| Secret `multica-runtime-claude` *(optional, commented)* | `/run/secrets/claude/{ANTHROPIC_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_AUTH_TOKEN}` | Claude Code harness (`MULTICA_AGENT_CLI` includes `claude`) — mount only the one key present |
 | Secret `multica-runtime-git` | `/run/secrets/git/GITHUB_TOKEN` **or** `GITHUB_APP_*` | git HTTPS for lazy `repo checkout` (PAT or App) |
 | ConfigMap `multica-runtime-aws` | `/run/config/aws/config` | Literal `~/.aws/config` fragment (generic stub in examples) |
 | ConfigMap `multica-runtime-aws-sso` | `/run/config/aws-sso/config.yaml` | `aws-sso` config (StartUrl, UrlAction=print) |
@@ -29,6 +30,10 @@ kubectl apply -f deployment.yaml
 When switching from PAT to GitHub App, update **both** the Secret keys and the
 Deployment `volumes.git.secret.items` list so they match (missing keys fail the
 pod mount). See comments in `deployment.yaml` / `secret.example.yaml`.
+
+Same rule for Claude Code: mount only the credential key you actually put in
+`multica-runtime-claude`, and set `MULTICA_AGENT_CLI=claude` (or
+`cursor,claude`). See [docs/kubernetes.md → Agent CLI harnesses](../../docs/kubernetes.md#agent-cli-harnesses-cursor--claude-code).
 
 ## AWS credentials
 

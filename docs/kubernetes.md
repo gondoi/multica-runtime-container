@@ -11,7 +11,7 @@ the full boot contract and GitHub auth tier precedence.
 | --- | --- |
 | [`namespace.yaml`](../examples/k8s/namespace.yaml) | `multica-runtime` namespace (deploy-time name — replace it) |
 | [`serviceaccount.yaml`](../examples/k8s/serviceaccount.yaml) | ServiceAccount for the pod — IRSA annotation point for AWS creds |
-| [`secret.example.yaml`](../examples/k8s/secret.example.yaml) | Placeholder Secrets: Multica home, Cursor key, git auth (AWS optional) |
+| [`secret.example.yaml`](../examples/k8s/secret.example.yaml) | Placeholder Secrets: Multica home, Cursor key, git auth (Claude Code + AWS optional) |
 | [`pvc.yaml`](../examples/k8s/pvc.yaml) | `multica-runtime-workspaces` PVC — the only durable volume |
 | [`deployment.yaml`](../examples/k8s/deployment.yaml) | Single-replica Deployment wiring the Secrets + PVC together |
 
@@ -49,6 +49,37 @@ the same `/usr/local/bin/ready.sh` used by the Compose healthcheck — pods go
 Ready once the daemon is up past the hard gates (required binaries + secrets).
 The **first** task run against the pod may cold-clone its repo; that is
 expected and is not part of the Ready gate.
+
+### Agent CLI harnesses (Cursor / Claude Code)
+
+`MULTICA_AGENT_CLI` in `deployment.yaml` (default `cursor`) names the harnesses
+the pod provisions and hard-gates: `cursor`, `claude`, or `cursor,claude`. The
+harness used for a specific run is chosen on the Multica agent definition; this
+only guarantees the CLI is present and authenticated in the pod.
+
+The `claude` Secret + volume are shipped **commented out** in `deployment.yaml`
+because a mounted-but-absent Secret (or a missing key in its `items` list) fails
+the pod mount. To run Claude Code:
+
+1. Add the `claude` Secret to your overlay from the commented block in
+   `secret.example.yaml` (`multica-runtime-claude`, one key only:
+   `ANTHROPIC_API_KEY` **or** `CLAUDE_CODE_OAUTH_TOKEN` **or**
+   `ANTHROPIC_AUTH_TOKEN`).
+2. Uncomment the matching `*_FILE` env var, the `claude` `volumeMount`, and the
+   `claude` volume in `deployment.yaml`.
+3. Set `MULTICA_AGENT_CLI` to `claude` (or `cursor,claude`).
+
+⚠️ Higher-risk, same as the GitHub/AWS tiers: that credential is inherited by
+every agent task the pod runs. Prefer the OAuth-token tier over a long-lived org
+API key and scope the credential to this runtime. Detail:
+[README → Agent CLI harnesses](../README.md#agent-cli-harnesses-multica_agent_cli).
+
+Verify from inside the pod once Ready:
+
+```bash
+kubectl -n multica-runtime exec deploy/multica-runtime -- claude --version
+kubectl -n multica-runtime logs deploy/multica-runtime | grep 'harness claude'
+```
 
 ### Switching GitHub auth tiers
 
