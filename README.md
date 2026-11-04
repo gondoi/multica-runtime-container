@@ -2,7 +2,11 @@
 
 Thin container image for a **[Multica](https://multica.ai) agent runtime home-base**.
 
-It boots a Multica daemon with Cursor as the v1 agent CLI, persists workspaces on a volume, and relies on Multica **lazy** `repo checkout` for source — no consumer monorepos are baked into the image, and there is **no** boot-time inventory clone-all.
+It boots a Multica daemon with two agent CLI harnesses available — **Cursor**
+(`cursor-agent`, the original v1 CLI) and **Claude Code** (`claude`) — persists
+workspaces on a volume, and relies on Multica **lazy** `repo checkout` for
+source — no consumer monorepos are baked into the image, and there is **no**
+boot-time inventory clone-all.
 
 Published image: `ghcr.io/gondoi/multica-runtime` (public GHCR, anonymous pull).
 
@@ -61,7 +65,8 @@ Deployments (Compose, Kubernetes) should pin a release tag such as `v0.1.0`.
 | Component | Role |
 | --- | --- |
 | `multica` CLI + daemon | Runtime identity and task execution |
-| `cursor-agent` | First agent provider (Cursor) |
+| `cursor-agent` | Agent CLI harness `cursor` (Cursor) |
+| `claude` | Agent CLI harness `claude` (Claude Code; pinned native binary, no Node) |
 | `asdf` | Versioned tool plugins (languages / CLIs) on the workspaces volume |
 | `git`, `openssh-client`, `jq`, `curl`, `procps` | Checkout, scripting, readiness probes |
 | `gh` (GitHub CLI) | Agent tooling (`gh pr create`, `gh api`, `gh run`); authenticates from the resolved tier — App tier re-mints per invocation |
@@ -71,7 +76,7 @@ Deployments (Compose, Kubernetes) should pin a release tag such as `v0.1.0`.
 | non-root `agent` user | Default runtime identity |
 | `/usr/local/bin/ready.sh` | Shallow Ready probe (daemon up — not full inventory) |
 
-**Not** in the image: language toolchains (install via asdf at runtime), AWS credentials of any kind, multi-CLI agent sets (Claude/Codex/etc.), or any private consumer AWS allowlist / inventory.
+**Not** in the image: language toolchains (install via asdf at runtime), AWS credentials of any kind, agent CLIs beyond Cursor + Claude Code (Codex, Copilot, …), or any private consumer AWS allowlist / inventory.
 
 ## Boot contract
 
@@ -80,11 +85,11 @@ Order:
 1. Source config (`.env` / Secret env-file mounts)
 2. Materialize Secret-projected Multica home (`config.json` + `daemon.id`) into ephemeral `~/.multica`; load Cursor/git token (and optional GitHub App) files
 3. Wire optional AWS ConfigMaps into PVC-backed `~/.aws` + `~/.config/aws-sso` (SSO cache on workspaces volume)
-4. Hard gates — required binaries (`multica`, `cursor-agent`, `gh`, `git`, `jq`, `curl`, `asdf`, `aws`, `aws-sso`) and secrets (Multica auth, `CURSOR_API_KEY`, forge token **or** GitHub App / GHES credentials)
+4. Hard gates — required binaries (`multica`, `gh`, `git`, `jq`, `curl`, `asdf`, `aws`, `aws-sso`), Multica auth, forge token **or** GitHub App / GHES credentials, and every harness named by `MULTICA_AGENT_CLI` (`cursor` → `cursor-agent` + `CURSOR_API_KEY`; `claude` → `claude` + an Anthropic credential)
 5. Configure git HTTPS credential helper; validate `MULTICA_LOG_LEVEL`; report AWS credential source
 6. `multica login` (token refresh) → **re-pin workspace** → daemon start --foreground
 
-**Ready** = daemon is up after gates. **Crash** = missing Multica/Cursor/git secret or required binary (non-zero exit → CrashLoop). Missing AWS ConfigMaps → continue degraded (daemon still Ready).
+**Ready** = daemon is up after gates. **Crash** = missing Multica/git secret, missing selected-harness binary or credential, unknown `MULTICA_AGENT_CLI`, or missing required binary (non-zero exit → CrashLoop). Missing AWS ConfigMaps → continue degraded (daemon still Ready).
 
 **Workspace pin** (after login): `MULTICA_WORKSPACE` (preferred; slug, display name, or UUID) → `MULTICA_WORKSPACE_ID` (same resolution) → projected Secret `config.json` `.workspace_id` → leave login default.
 
@@ -99,13 +104,63 @@ Multica home is **Secret-projected** — there is **no** Multica-home PVC. Only 
 | Secret keys | Mount path | Purpose |
 | --- | --- | --- |
 | `config.json`, `daemon.id` | `/run/secrets/multica-home/` | Multica identity (copied to ephemeral `~/.multica`) |
-| `CURSOR_API_KEY` | `/run/secrets/cursor/CURSOR_API_KEY` | Cursor agent |
+| `CURSOR_API_KEY` | `/run/secrets/cursor/CURSOR_API_KEY` | Cursor harness (`cursor`) |
+| `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_AUTH_TOKEN` | `/run/secrets/claude/` | Claude Code harness (`claude`) — one of the three |
 | `GITHUB_TOKEN` (etc.) | `/run/secrets/git/GITHUB_TOKEN` | git HTTPS via static PAT (personal / orgs that allow PATs) |
 | `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY` | `/run/secrets/git/` | git HTTPS via short-lived App installation tokens (org-safe; preferred when PATs are banned) |
 | `GITHUB_USER`, `GITHUB_PASSWORD` | `/run/secrets/git/` | git HTTPS via username + password — **GitHub Enterprise Server only**, lowest priority |
 | `GITHUB_HOST` | `/run/secrets/git/GITHUB_HOST` | GitHub host for all three GitHub tiers (default `github.com`) |
 
 Provide **either** a static forge token, **or** the GitHub App trio, **or** a GHES username/password pair — the GitHub tier is picked by precedence (next section). Env vars override files when set. Layout details: [`examples/secrets/`](examples/secrets/). Kubernetes examples: [`examples/k8s/`](examples/k8s/) — usage walkthrough: [`docs/kubernetes.md`](docs/kubernetes.md).
+
+### Agent CLI harnesses (`MULTICA_AGENT_CLI`)
+
+⚠️ **Higher-risk surface, flagged like the GitHub/AWS tiers**: the credential
+below is inherited by the daemon and therefore by **every agent task** it runs
+in this container. Scope it to the workspace it serves, prefer the OAuth-token
+tier over a long-lived org API key where possible, and rotate it like any other
+agent credential.
+
+The Multica CLI owns harness behaviour — `multica daemon start` spawns the
+selected CLI per run, speaks that CLI's own stream protocol and parses the
+results. **This repo implements none of that**; it only guarantees the selected
+CLI is installed and authenticated here.
+
+`MULTICA_AGENT_CLI` (comma and/or space separated, default `cursor`) names the
+harnesses this container provisions and **hard-gates**:
+
+| Value | Binaries gated | Credential required |
+| --- | --- | --- |
+| `cursor` (default) | `cursor-agent` | `CURSOR_API_KEY` |
+| `claude` | `claude` | `ANTHROPIC_API_KEY` **or** `CLAUDE_CODE_OAUTH_TOKEN` **or** `ANTHROPIC_AUTH_TOKEN` |
+| `cursor,claude` | both | both (each harness needs its own) |
+
+- A selected harness with a missing binary or credential is a **hard boot
+  failure** (CrashLoop with an actionable message), never a silent fallback.
+- Harnesses **not** selected are ignored — a Claude-only deployment does not
+  need `CURSOR_API_KEY`, and vice versa.
+- The default stays `cursor`, so existing deployments keep their exact boot
+  contract.
+- The harness used for a particular run is chosen on the **Multica agent
+  definition** (server side); `MULTICA_AGENT_CLI` is this container's
+  provision/gate selector, not a per-run switch.
+- `MULTICA_CLAUDE_PATH` / `MULTICA_CURSOR_PATH` are honoured as binary overrides
+  (the daemon reads the same variables); when unset, the entrypoint pins them to
+  the resolved absolute path of the binary it gated.
+
+### Claude Code credential tiers
+
+| Tier | Variable | Notes |
+| --- | --- | --- |
+| 1 · OAuth token | `CLAUDE_CODE_OAUTH_TOKEN` | Token from `claude setup-token`; authenticates as a Claude subscription. Preferred: revocable and not a raw org key. |
+| 2 · Gateway bearer | `ANTHROPIC_AUTH_TOKEN` | Pair with `ANTHROPIC_BASE_URL` (plain non-secret env) when routing through a gateway/proxy. |
+| 3 · API key | `ANTHROPIC_API_KEY` | Long-lived secret (`sk-ant-…`) billed to the org — highest blast radius if leaked. |
+
+The CLI itself decides which of the present credentials to use; the entrypoint
+only checks that at least one exists and never logs any of them.
+`DISABLE_AUTOUPDATER=1` is exported by default so the pinned Claude Code build
+cannot self-update inside the container (override deliberately if you want
+in-place upgrades).
 
 ### GitHub auth precedence (App > PAT > password)
 
@@ -204,8 +259,10 @@ there is no `AWS_AUTH_TIER` switch to force one, because the SDK's own chain
 already tries them in a fixed, well-documented order.
 
 Footprint: the official v2 installer adds ~236 MB (`/usr/local/aws-cli`) to the
-image (~1.05 GB built here). There is no opt-out build arg — a slim variant
-would need a second Dockerfile stage/target rather than a flag.
+image (~1.05 GB built here without Claude Code, ~1.4 GB with it). There is no
+opt-out build arg for AWS — a slim variant would need a second Dockerfile
+stage/target rather than a flag. (Claude Code *does* have one:
+`INSTALL_CLAUDE_CLI=false`.)
 
 Boot logs which source the chain resolves (`aws auth: …` from
 `bin/aws-credential-source.sh`) — informational only, never a gate, never a
@@ -215,14 +272,24 @@ Kubernetes/IRSA walkthrough: [`docs/kubernetes.md`](docs/kubernetes.md).
 ## Build locally
 
 ```bash
+# Both harnesses (default): Cursor + Claude Code
 docker build -t multica-runtime:local .
+
+# Cursor-only image (~330 MB smaller) — the claude boot gate then rejects
+# MULTICA_AGENT_CLI=claude with an actionable message:
+docker build --build-arg INSTALL_CLAUDE_CLI=false -t multica-runtime:local-cursor .
 ```
+
+Claude Code ships as **one pinned native binary** (`downloads.claude.ai`, SHA-256
+verified against the release manifest at build time) — no Node.js in the image.
+Its footprint is ~330 MB on disk, so the slim variant above exists for
+Cursor-only deployments.
 
 Smoke that baseline binaries exist:
 
 ```bash
 docker run --rm --entrypoint /bin/bash multica-runtime:local -lc \
-  'command -v multica cursor-agent gh aws aws-sso asdf git ssh jq curl tini ready.sh materialize-secrets.sh materialize-aws.sh && gh --version && aws --version && aws-sso version'
+  'command -v multica cursor-agent claude gh aws aws-sso asdf git ssh jq curl tini ready.sh materialize-secrets.sh materialize-aws.sh agent-harness.sh && claude --version && cursor-agent --version && gh --version && aws --version && aws-sso version'
 ```
 
 ### Compose (laptop parity)
@@ -230,11 +297,13 @@ docker run --rm --entrypoint /bin/bash multica-runtime:local -lc \
 Full walkthrough: [`docs/docker.md`](docs/docker.md).
 
 ```bash
-mkdir -p secrets/multica-home secrets/cursor secrets/git
+mkdir -p secrets/multica-home secrets/cursor secrets/claude secrets/git
 cp examples/secrets/multica-home/config.json.example secrets/multica-home/config.json
 cp examples/secrets/multica-home/daemon.id.example   secrets/multica-home/daemon.id
 # edit secrets/… then:
 printf '%s' "$CURSOR_API_KEY" > secrets/cursor/CURSOR_API_KEY
+# optional — Claude Code harness, then set MULTICA_AGENT_CLI=claude (or cursor,claude):
+printf '%s' "$ANTHROPIC_API_KEY" > secrets/claude/ANTHROPIC_API_KEY
 printf '%s' "$GITHUB_TOKEN"   > secrets/git/GITHUB_TOKEN
 docker compose up -d --build
 docker compose ps      # healthy when ready.sh passes
@@ -248,7 +317,7 @@ Automated fixture check (stub Multica for happy path — no live cloud required)
 ./test/boot/run-seam.sh
 ```
 
-Fast unit suites (auth precedence + App token mint; no Docker, no network):
+Fast unit suites (auth precedence, App token mint, harness selection; no Docker, no network):
 
 ```bash
 ./test/unit/run-unit.sh
@@ -262,7 +331,9 @@ See [`.env.example`](.env.example) for optional non-secret knobs. Tokens prefer 
 | --- | --- |
 | `secrets/multica-home/config.json` | Multica PAT + server/workspace (**required** unless `MULTICA_TOKEN` env) |
 | `secrets/multica-home/daemon.id` | Stable daemon id across recreates |
-| `secrets/cursor/CURSOR_API_KEY` | Cursor agent auth (**required**) |
+| `secrets/cursor/CURSOR_API_KEY` | Cursor harness auth (**required** while `MULTICA_AGENT_CLI` includes `cursor`, the default) |
+| `secrets/claude/ANTHROPIC_API_KEY` (or `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_AUTH_TOKEN`) | Claude Code harness auth (**required** while `MULTICA_AGENT_CLI` includes `claude`) |
+| `MULTICA_AGENT_CLI` | Harnesses provisioned + gated at boot: `cursor` (default) \| `claude` \| `cursor,claude`. See [Agent CLI harnesses](#agent-cli-harnesses-multica_agent_cli). |
 | `secrets/git/GITHUB_TOKEN` | git HTTPS PAT (**required** unless GitLab/Gitea **or** GitHub App trio **or** GHES password pair) |
 | `secrets/git/GITHUB_APP_*` | App ID + installation ID + PEM (alternative to `GITHUB_TOKEN`) |
 | `secrets/git/GITHUB_USER` + `GITHUB_PASSWORD` | GitHub Enterprise Server password pair (lowest priority; `github.com` rejects it) |
@@ -318,7 +389,9 @@ Consequences worth knowing:
 
 - Repos are **not** cloned at image build or at container start. Register them in Multica workspace/project metadata; materialize with `multica repo checkout` during tasks (first task may cold-clone).
 - `asdf` is installed with plugin-install capability; pin tool versions (including AWS CLI) on the workspaces volume, not in the image. Upstream `aws-sso` is image-pinned at a fixed path for stable `credential_process` lines.
-- Patterns inspired by community Multica runtimes (`tini`, non-root user, forge HTTPS helpers) — adapted for a Cursor-first, asdf-based baseline.
+- Patterns inspired by community Multica runtimes (`tini`, non-root user, forge HTTPS helpers) — adapted for a Cursor + Claude Code, asdf-based baseline.
+- **Harness ownership is split on purpose.** The Multica daemon (upstream `multica` CLI) owns harness invocation, stream protocol and output parsing; this image owns *provisioning* — install the pinned CLI, gate on its binary + credential, export the daemon's path/auth env. That is why the Claude work here is a binary + credential + gate + docs change, not a new parser: adding a harness parser would mean patching the upstream CLI, not this repo.
+- `bin/agent-harness.sh` is the single place that knows what a harness needs (binary, credential vars, path overrides). Adding a third harness (e.g. Codex) is one `case` branch per helper plus a Dockerfile install step — the entrypoint does not change.
 - AWS CLI ships with no baked credentials — prefer IRSA / instance role (see [AWS CLI auth tiers](#aws-auth-tiers)). ConfigMap `aws-sso` profiles + operator-exec login are supported for homelab (see [AWS profiles](#aws-profiles-configmaps--pvc-cache)); SSO cache lives on the workspaces PVC.
 
 ## License
