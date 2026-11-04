@@ -17,13 +17,23 @@ set -euo pipefail
 log() { printf '%s\n' "$*" >&2; }
 die() { log "FATAL: $*"; exit 1; }
 
-APP_ID="${GITHUB_APP_ID:-}"
-INSTALLATION_ID="${GITHUB_APP_INSTALLATION_ID:-}"
 API_URL="${GITHUB_API_URL:-https://api.github.com}"
 KEY_FILE="${GITHUB_APP_PRIVATE_KEY_FILE:-/run/secrets/git/GITHUB_APP_PRIVATE_KEY}"
+ID_FILE="${GITHUB_APP_ID_FILE:-/run/secrets/git/GITHUB_APP_ID}"
+INSTALLATION_ID_FILE="${GITHUB_APP_INSTALLATION_ID_FILE:-/run/secrets/git/GITHUB_APP_INSTALLATION_ID}"
 
-[ -n "$APP_ID" ] || die "GITHUB_APP_ID is required"
-[ -n "$INSTALLATION_ID" ] || die "GITHUB_APP_INSTALLATION_ID is required"
+# Prefer env; fall back to Secret file mounts (credential helper has no boot env).
+APP_ID="${GITHUB_APP_ID:-}"
+if [ -z "$APP_ID" ] && [ -f "$ID_FILE" ]; then
+  APP_ID="$(tr -d '\r\n' <"$ID_FILE")"
+fi
+INSTALLATION_ID="${GITHUB_APP_INSTALLATION_ID:-}"
+if [ -z "$INSTALLATION_ID" ] && [ -f "$INSTALLATION_ID_FILE" ]; then
+  INSTALLATION_ID="$(tr -d '\r\n' <"$INSTALLATION_ID_FILE")"
+fi
+
+[ -n "$APP_ID" ] || die "GITHUB_APP_ID is required (env or $ID_FILE)"
+[ -n "$INSTALLATION_ID" ] || die "GITHUB_APP_INSTALLATION_ID is required (env or $INSTALLATION_ID_FILE)"
 
 TMP_KEY=""
 cleanup() {
