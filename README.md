@@ -6,6 +6,8 @@ It boots a Multica daemon with Cursor as the v1 agent CLI, persists workspaces o
 
 Published image: `ghcr.io/gondoi/multica-runtime` (public GHCR, anonymous pull).
 
+**Usage docs:** [Running locally with Docker](docs/docker.md) (incl. a working Compose setup) · [Running in Kubernetes](docs/kubernetes.md)
+
 ### CI publish
 
 GitHub Actions (`.github/workflows/docker-publish.yml`) builds **linux/amd64 + linux/arm64** via `FuelLabs/github-actions` `docker-build-push` and pushes pin-friendly tags only (no `latest`):
@@ -67,7 +69,7 @@ Multica home is **Secret-projected** — there is **no** Multica-home PVC. Only 
 | `GITHUB_USER`, `GITHUB_PASSWORD` | `/run/secrets/git/` | git HTTPS via username + password — **GitHub Enterprise Server only**, lowest priority |
 | `GITHUB_HOST` | `/run/secrets/git/GITHUB_HOST` | GitHub host for all three GitHub tiers (default `github.com`) |
 
-Provide **either** a static forge token, **or** the GitHub App trio, **or** a GHES username/password pair — the GitHub tier is picked by precedence (next section). Env vars override files when set. Layout details: [`examples/secrets/`](examples/secrets/). Kubernetes examples: [`examples/k8s/`](examples/k8s/).
+Provide **either** a static forge token, **or** the GitHub App trio, **or** a GHES username/password pair — the GitHub tier is picked by precedence (next section). Env vars override files when set. Layout details: [`examples/secrets/`](examples/secrets/). Kubernetes examples: [`examples/k8s/`](examples/k8s/) — usage walkthrough: [`docs/kubernetes.md`](docs/kubernetes.md).
 
 ### GitHub auth precedence (App > PAT > password)
 
@@ -122,6 +124,8 @@ docker run --rm --entrypoint /bin/bash multica-runtime:local -lc \
 ```
 
 ### Compose (laptop parity)
+
+Full walkthrough: [`docs/docker.md`](docs/docker.md).
 
 ```bash
 mkdir -p secrets/multica-home secrets/cursor secrets/git
