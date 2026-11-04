@@ -347,6 +347,20 @@ if docker exec "$cname_proj" grep -q -- '--device-name' /tmp/multica-runtime.rea
 else
   ok "unset MULTICA_MACHINE_NAME leaves the daemon's hostname default alone"
 fi
+# Trap guard: this fixture overrides MULTICA_AGENT_RUNTIME_NAME but not
+# MULTICA_MACHINE_NAME — boot must say the former does not name the runtime.
+if wait_log "$cname_proj" "WARN: MULTICA_AGENT_RUNTIME_NAME='multica-runtime-boot-seam-projected' does not change the runtime-list name"; then
+  ok "boot warns when only MULTICA_AGENT_RUNTIME_NAME is set (runtime-list name unchanged)"
+else
+  bad "boot did not warn about the MULTICA_AGENT_RUNTIME_NAME trap"
+  docker logs "$cname_proj" >&2 || true
+fi
+# ... and stays quiet when MULTICA_MACHINE_NAME is set (warning would be noise).
+if docker logs "$cname_machine" 2>&1 | grep -q 'does not change the runtime-list name'; then
+  bad "trap warning fired even though MULTICA_MACHINE_NAME was set"
+else
+  ok "no trap warning when MULTICA_MACHINE_NAME is set"
+fi
 
 echo "==> Happy path — GitHub Enterprise Server password tier (lowest priority)"
 cname_pwd="multica-boot-seam-pwd-$$"
