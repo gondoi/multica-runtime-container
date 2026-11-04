@@ -17,6 +17,8 @@ ARG MULTICA_VERSION=0.8.0
 ARG CURSOR_AGENT_VERSION=2026.10.22-27dcf5f
 # GitHub CLI (pinned). Installed as gh-real; /usr/local/bin/gh is bin/gh-wrapper.sh.
 ARG GH_VERSION=2.103.3
+# AWS CLI v2 (pinned). No baked-in credentials — see README AWS auth tiers.
+ARG AWS_CLI_VERSION=2.31.11
 
 # ── System deps (language-agnostic) ──────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -94,12 +96,29 @@ RUN arch="$(dpkg --print-architecture)" && \
     chmod +x /usr/local/bin/gh-real && \
     /usr/local/bin/gh-real --version
 
+# ── AWS CLI v2 (pinned official installer; no credentials baked in) ──────
+# Auth is resolved at runtime by the SDK's default chain (env vars, IRSA web
+# identity token, EC2/ECS instance role, or a mounted ~/.aws config/credentials
+# file) — see README "AWS CLI auth tiers". Nothing here writes credentials.
+RUN arch="$(dpkg --print-architecture)" && \
+    case "$arch" in \
+      amd64) aws_arch=x86_64 ;; \
+      arm64) aws_arch=aarch64 ;; \
+      *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${aws_arch}-${AWS_CLI_VERSION}.zip" -o /tmp/awscliv2.zip && \
+    unzip -q /tmp/awscliv2.zip -d /tmp && \
+    /tmp/aws/install && \
+    rm -rf /tmp/awscliv2.zip /tmp/aws && \
+    aws --version
+
 # ── Forge HTTPS helper + GitHub App mint + secret materialize + ready ────
 COPY bin/configure-git-auth.sh /usr/local/bin/configure-git-auth.sh
 COPY bin/mint-github-app-token.sh /usr/local/bin/mint-github-app-token.sh
 COPY bin/github-app-credential-helper.sh /usr/local/bin/github-app-credential-helper.sh
 COPY bin/materialize-secrets.sh /usr/local/bin/materialize-secrets.sh
 COPY bin/log-level-filter.sh /usr/local/bin/log-level-filter.sh
+COPY bin/aws-credential-source.sh /usr/local/bin/aws-credential-source.sh
 COPY bin/ready.sh /usr/local/bin/ready.sh
 COPY bin/gh-wrapper.sh /usr/local/bin/gh
 COPY entrypoint.sh /entrypoint.sh
@@ -109,6 +128,7 @@ RUN chmod +x /usr/local/bin/configure-git-auth.sh \
       /usr/local/bin/materialize-secrets.sh \
       /usr/local/bin/gh \
       /usr/local/bin/log-level-filter.sh \
+      /usr/local/bin/aws-credential-source.sh \
       /usr/local/bin/ready.sh /entrypoint.sh && \
     chown agent:agent /entrypoint.sh
 

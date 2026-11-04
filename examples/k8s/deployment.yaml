@@ -17,6 +17,10 @@ spec:
       labels:
         app.kubernetes.io/name: multica-runtime
     spec:
+      # AWS auth tier 1 (IRSA) hooks onto this ServiceAccount — see
+      # serviceaccount.yaml. A plain ServiceAccount (no annotation) is fine:
+      # the pod just gets no AWS credentials.
+      serviceAccountName: multica-runtime
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -61,6 +65,17 @@ spec:
             # Prefer consumer overlay for tenant-specific values.
             # - name: MULTICA_WORKSPACE
             #   value: fuel-labs
+            #
+            # AWS: no credential env vars here by design. Tier 1 (IRSA) is
+            # wired by the ServiceAccount annotation above and needs nothing
+            # in the pod spec. Optional tier 3 — a mounted config/credentials
+            # file — uncomment both this block and the `aws` volume/mount below:
+            # - name: AWS_CONFIG_FILE
+            #   value: /run/secrets/aws/config
+            # - name: AWS_SHARED_CREDENTIALS_FILE
+            #   value: /run/secrets/aws/credentials
+            # - name: AWS_REGION
+            #   value: us-east-1
           volumeMounts:
             - name: workspaces
               mountPath: /home/agent/workspaces
@@ -73,6 +88,11 @@ spec:
             - name: git
               mountPath: /run/secrets/git
               readOnly: true
+            # Optional — AWS auth tier 3 (mounted config/credentials). Requires
+            # the `aws` volume below AND the matching Secret to exist.
+            # - name: aws
+            #   mountPath: /run/secrets/aws
+            #   readOnly: true
           startupProbe:
             exec:
               command: ["/usr/local/bin/ready.sh"]
@@ -116,3 +136,13 @@ spec:
             items:
               - key: GITHUB_TOKEN
                 path: GITHUB_TOKEN
+        # Optional — AWS auth tier 3 only (static keys in a Secret are the
+        # least-preferred option; prefer IRSA via serviceaccount.yaml).
+        # - name: aws
+        #   secret:
+        #     secretName: multica-runtime-aws
+        #     items:
+        #       - key: config
+        #         path: config
+        #       - key: credentials
+        #         path: credentials

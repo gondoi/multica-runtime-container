@@ -19,7 +19,7 @@ Verify the baseline binaries exist without booting the daemon:
 
 ```bash
 docker run --rm --entrypoint /bin/bash multica-runtime:local -lc \
-  'command -v multica cursor-agent gh asdf git ssh jq curl tini ready.sh materialize-secrets.sh && gh --version'
+  'command -v multica cursor-agent gh aws asdf git ssh jq curl tini ready.sh materialize-secrets.sh && gh --version && aws --version'
 ```
 
 ### Run with Compose (recommended)
@@ -78,6 +78,39 @@ docker compose run --rm --entrypoint bash runtime
 # or, without compose:
 docker run --rm -it --entrypoint /bin/bash ghcr.io/gondoi/multica-runtime:sha-<tag>
 ```
+
+### AWS access from the container
+
+The image installs the AWS CLI v2 with **no** credentials and no AWS auth
+plumbing of its own — the SDK default chain resolves them, so what you wire
+outside the container decides the tier ([README](../README.md#aws-auth-tiers)).
+
+- **On an EC2 instance / ECS task with a role:** nothing to do. The chain picks
+  up the instance profile / task role. This is compose's best option.
+- **Static keys or a named profile (fallback only):** bind-mount a config tree
+  and point the env vars at it — never bake keys into the image or `.env`:
+
+  ```bash
+  mkdir -p secrets/aws
+  # secrets/aws/config       → [default] / region = us-east-1 / output = json
+  # secrets/aws/credentials  → [default] / aws_access_key_id = … / aws_secret_access_key = …
+  # then uncomment the two env vars + the ./secrets/aws bind-mount in
+  # docker-compose.yml (or set them in .env)
+  docker compose up -d
+  ```
+
+Verify and read the resolved tier:
+
+```bash
+docker compose exec runtime aws sts get-caller-identity
+docker compose logs runtime | grep 'aws auth:'
+```
+
+That boot line names the source the chain resolved (`static env keys`,
+`web identity / IRSA`, `container credentials endpoint`, `mounted AWS config`,
+or `none detected …`). It is informational only — it never fails a boot and
+never prints a credential value. `aws-sso` / `aws configure sso` stays deferred:
+the device-authorization flow needs an interactive browser step.
 
 ### Boot seam tests
 

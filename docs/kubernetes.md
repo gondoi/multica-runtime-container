@@ -10,7 +10,8 @@ the full boot contract and GitHub auth tier precedence.
 | Manifest | Role |
 | --- | --- |
 | [`namespace.yaml`](../examples/k8s/namespace.yaml) | `multica-runtime` namespace (deploy-time name — replace it) |
-| [`secret.example.yaml`](../examples/k8s/secret.example.yaml) | Placeholder Secrets: Multica home, Cursor key, git auth |
+| [`serviceaccount.yaml`](../examples/k8s/serviceaccount.yaml) | ServiceAccount for the pod — IRSA annotation point for AWS creds |
+| [`secret.example.yaml`](../examples/k8s/secret.example.yaml) | Placeholder Secrets: Multica home, Cursor key, git auth (AWS optional) |
 | [`pvc.yaml`](../examples/k8s/pvc.yaml) | `multica-runtime-workspaces` PVC — the only durable volume |
 | [`deployment.yaml`](../examples/k8s/deployment.yaml) | Single-replica Deployment wiring the Secrets + PVC together |
 
@@ -26,6 +27,7 @@ should use GitOps + SOPS (or your cluster's secret manager) instead of
 
 ```bash
 kubectl apply -f examples/k8s/namespace.yaml
+kubectl apply -f examples/k8s/serviceaccount.yaml
 kubectl apply -f examples/k8s/secret.example.yaml   # replace placeholder values first
 kubectl apply -f examples/k8s/pvc.yaml
 kubectl apply -f examples/k8s/deployment.yaml
@@ -64,11 +66,37 @@ match — a mismatch fails the Secret volume mount:
 See [GitHub auth precedence](../README.md#github-auth-precedence-app--pat--password)
 in the README for how the three tiers resolve.
 
+### AWS credentials (IRSA > instance role > mounted config)
+
+The image installs the AWS CLI v2 but wires **no** AWS auth of its own — the SDK
+default chain resolves credentials, so tier selection happens entirely outside
+the container. Highest trust first:
+
+| Tier | Setup | Pod spec change | Static keys |
+| --- | --- | --- | --- |
+| 1 · IRSA (EKS, preferred) | IAM role whose trust policy federates the cluster's OIDC provider to `system:serviceaccount:multica-runtime:multica-runtime`; EKS then projects `AWS_WEB_IDENTITY_TOKEN_FILE` + `AWS_ROLE_ARN` automatically | uncomment `eks.amazonaws.com/role-arn` in `serviceaccount.yaml` | No |
+| 2 · Instance / ECS task role | Node instance profile (EC2) or task role (ECS) — the SDK calls IMDS/container endpoint on its own | none | No |
+| 3 · Mounted config file | Secret with `config` / `credentials`, pointed at by `AWS_CONFIG_FILE` / `AWS_SHARED_CREDENTIALS_FILE` | uncomment the AWS env vars, `volumeMounts.aws`, and `volumes.aws` in `deployment.yaml`, plus the optional Secret in `secret.example.yaml` | Yes — avoid when tiers 1–2 exist |
+
+Grant the role only what agent tasks actually need (`sts:GetCallerIdentity`,
+plus the specific read actions for the discovery work you intend); every task
+running in the pod inherits the identity. Verify from inside a pod:
+
+```bash
+kubectl -n multica-runtime exec deploy/multica-runtime -- aws sts get-caller-identity
+kubectl -n multica-runtime logs deploy/multica-runtime | grep 'aws auth:'
+```
+
+The boot log line names the tier the chain resolved (informational, never a
+boot gate, never a credential value). `aws-sso` stays deferred — the device
+flow needs an interactive browser that a headless pod doesn't have.
+
 ### Tear down
 
 ```bash
 kubectl delete -f examples/k8s/deployment.yaml
 kubectl delete -f examples/k8s/pvc.yaml       # drops the workspaces cache
 kubectl delete -f examples/k8s/secret.example.yaml
+kubectl delete -f examples/k8s/serviceaccount.yaml
 kubectl delete -f examples/k8s/namespace.yaml
 ```
