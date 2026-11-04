@@ -66,17 +66,17 @@ match — a mismatch fails the Secret volume mount:
 See [GitHub auth precedence](../README.md#github-auth-precedence-app--pat--password)
 in the README for how the three tiers resolve.
 
-### AWS credentials (IRSA > instance role > mounted config)
+### AWS credentials (IRSA > instance role > aws-sso ConfigMaps > static mount)
 
-The image installs the AWS CLI v2 but wires **no** AWS auth of its own — the SDK
-default chain resolves credentials, so tier selection happens entirely outside
-the container. Highest trust first:
+The image installs AWS CLI v2 + upstream `aws-sso` but bakes **no** credentials.
+Prefer the SDK default chain first; ConfigMap profiles cover homelab without IRSA:
 
 | Tier | Setup | Pod spec change | Static keys |
 | --- | --- | --- | --- |
 | 1 · IRSA (EKS, preferred) | IAM role whose trust policy federates the cluster's OIDC provider to `system:serviceaccount:multica-runtime:multica-runtime`; EKS then projects `AWS_WEB_IDENTITY_TOKEN_FILE` + `AWS_ROLE_ARN` automatically | uncomment `eks.amazonaws.com/role-arn` in `serviceaccount.yaml` | No |
 | 2 · Instance / ECS task role | Node instance profile (EC2) or task role (ECS) — the SDK calls IMDS/container endpoint on its own | none | No |
-| 3 · Mounted config file | Secret with `config` / `credentials`, pointed at by `AWS_CONFIG_FILE` / `AWS_SHARED_CREDENTIALS_FILE` | uncomment the AWS env vars, `volumeMounts.aws`, and `volumes.aws` in `deployment.yaml`, plus the optional Secret in `secret.example.yaml` | Yes — avoid when tiers 1–2 exist |
+| 3a · aws-sso ConfigMaps | Curated `~/.aws/config` + aws-sso YAML; SSO cache on workspaces PVC | `aws-configmap.yaml` + Deployment mounts (already in examples) | No |
+| 3b · Mounted static config | Secret with `config` / `credentials`, pointed at by `AWS_CONFIG_FILE` / `AWS_SHARED_CREDENTIALS_FILE` | uncomment the AWS env vars, `volumeMounts.aws`, and `volumes.aws` in `deployment.yaml`, plus the optional Secret in `secret.example.yaml` | Yes — avoid when tiers 1–3a exist |
 
 Grant the role only what agent tasks actually need (`sts:GetCallerIdentity`,
 plus the specific read actions for the discovery work you intend); every task
@@ -88,8 +88,14 @@ kubectl -n multica-runtime logs deploy/multica-runtime | grep 'aws auth:'
 ```
 
 The boot log line names the tier the chain resolved (informational, never a
-boot gate, never a credential value). `aws-sso` stays deferred — the device
-flow needs an interactive browser that a headless pod doesn't have.
+boot gate, never a credential value).
+
+For ConfigMap / aws-sso profiles, login is **operator-exec only**:
+
+```bash
+kubectl -n multica-runtime exec -it deploy/multica-runtime -- \
+  env AWS_SSO_OPERATOR_LOGIN=1 aws-sso login --url-action=print
+```
 
 ### Tear down
 

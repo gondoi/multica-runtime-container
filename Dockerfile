@@ -19,6 +19,8 @@ ARG CURSOR_AGENT_VERSION=2026.10.22-27dcf5f
 ARG GH_VERSION=2.103.3
 # AWS CLI v2 (pinned). No baked-in credentials — see README AWS auth tiers.
 ARG AWS_CLI_VERSION=2.31.11
+# Upstream synfinatic/aws-sso-cli (not fuel-internal -eks). Pin deliberately.
+ARG AWS_SSO_VERSION=2.1.0
 
 # ── System deps (language-agnostic) ──────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -112,13 +114,27 @@ RUN arch="$(dpkg --print-architecture)" && \
     rm -rf /tmp/awscliv2.zip /tmp/aws && \
     aws --version
 
-# ── Forge HTTPS helper + GitHub App mint + secret materialize + ready ────
+# ── Upstream aws-sso (Aaron Turner) — fixed path for credential_process ──
+RUN mkdir -p /usr/local/libexec && \
+    arch="$(dpkg --print-architecture)" && \
+    case "$arch" in \
+      amd64) sso_arch=amd64 ;; \
+      arm64) sso_arch=arm64 ;; \
+      *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL "https://github.com/synfinatic/aws-sso-cli/releases/download/v${AWS_SSO_VERSION}/aws-sso-${AWS_SSO_VERSION}-linux-${sso_arch}" \
+      -o /usr/local/libexec/aws-sso && \
+    chmod 755 /usr/local/libexec/aws-sso
+
+# ── Forge HTTPS helper + GitHub App mint + secret/AWS materialize + ready ─
 COPY bin/configure-git-auth.sh /usr/local/bin/configure-git-auth.sh
 COPY bin/mint-github-app-token.sh /usr/local/bin/mint-github-app-token.sh
 COPY bin/github-app-credential-helper.sh /usr/local/bin/github-app-credential-helper.sh
 COPY bin/materialize-secrets.sh /usr/local/bin/materialize-secrets.sh
 COPY bin/log-level-filter.sh /usr/local/bin/log-level-filter.sh
 COPY bin/aws-credential-source.sh /usr/local/bin/aws-credential-source.sh
+COPY bin/materialize-aws.sh /usr/local/bin/materialize-aws.sh
+COPY bin/aws-sso-guard.sh /usr/local/bin/aws-sso
 COPY bin/ready.sh /usr/local/bin/ready.sh
 COPY bin/gh-wrapper.sh /usr/local/bin/gh
 COPY entrypoint.sh /entrypoint.sh
@@ -129,6 +145,8 @@ RUN chmod +x /usr/local/bin/configure-git-auth.sh \
       /usr/local/bin/gh \
       /usr/local/bin/log-level-filter.sh \
       /usr/local/bin/aws-credential-source.sh \
+      /usr/local/bin/materialize-aws.sh \
+      /usr/local/bin/aws-sso \
       /usr/local/bin/ready.sh /entrypoint.sh && \
     chown agent:agent /entrypoint.sh
 

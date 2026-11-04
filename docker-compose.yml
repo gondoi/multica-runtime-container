@@ -20,8 +20,13 @@
 # Repos are NOT cloned at start. First task may cold-clone via `multica repo checkout`.
 #
 # Volume roles:
-#   - workspaces: durable (.repos, worktrees, asdf, provider homes)
+#   - workspaces: durable (.repos, worktrees, asdf, provider homes / AWS SSO cache)
 #   - Multica home is Secret-projected / bind-mounted — NOT a named volume
+#   - AWS config stubs: bind-mount examples/aws (replace with private allowlist)
+#
+# Operator AWS SSO login (after healthy):
+#   docker compose exec -e AWS_SSO_OPERATOR_LOGIN=1 runtime \
+#     aws-sso login --url-action=print
 
 services:
   runtime:
@@ -39,9 +44,9 @@ services:
       MULTICA_HOME_SECRET_DIR: /run/secrets/multica-home
       CURSOR_API_KEY_FILE: /run/secrets/cursor/CURSOR_API_KEY
       GITHUB_TOKEN_FILE: /run/secrets/git/GITHUB_TOKEN
-      # AWS auth tier 3 (fallback only — prefer IRSA/instance-profile where
-      # available; see README "AWS CLI auth tiers"). Uncomment both the env
-      # vars and the secrets/aws bind-mount below to use a mounted config.
+      # AWS auth: prefer IRSA/instance-profile where available (README tiers).
+      # Do not set AWS_PROFILE — callers pass --profile explicitly.
+      # Optional static-key fallback (uncomment with secrets/aws mount):
       # AWS_CONFIG_FILE: /run/secrets/aws/config
       # AWS_SHARED_CREDENTIALS_FILE: /run/secrets/aws/credentials
     volumes:
@@ -51,8 +56,12 @@ services:
       - ./secrets/multica-home:/run/secrets/multica-home:ro
       - ./secrets/cursor:/run/secrets/cursor:ro
       - ./secrets/git:/run/secrets/git:ro
-      # Optional — AWS auth tier 3 (mounted config/credentials), see above.
+      # Optional — AWS auth tier 3 static keys (mounted config/credentials).
       # - ./secrets/aws:/run/secrets/aws:ro
+      # AWS ConfigMap / aws-sso parity (generic stubs; override for private allowlist).
+      - ./examples/aws/config:/run/config/aws/config:ro
+      - ./examples/aws/config.yaml:/run/config/aws-sso/config.yaml:ro
+
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "/usr/local/bin/ready.sh"]

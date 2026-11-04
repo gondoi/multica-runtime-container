@@ -2,20 +2,22 @@
 # Multica runtime home-base boot contract (minimal / Multica-native):
 #   1. Source config / helpers
 #   2. Materialize Secret-projected Multica home + Cursor/git tokens
+#   2a. Wire optional AWS ConfigMaps + SSO cache onto workspaces PVC
 #   3. Hard-fail gates (required binaries + Multica/Cursor/git-auth secrets)
 #   4. Configure git HTTPS credential helper
 #   4b. Validate MULTICA_LOG_LEVEL + export it (log-stream filter, see below)
 #   4c. Report the resolved AWS credential source (informational; no creds)
-#   5. login → pin workspace (env/Secret) → exec multica daemon start --foreground
+#   5. login → pin workspace (env/Secret) → daemon start --foreground
 #
 # Ready = daemon is up after gates. There is NO boot-time inventory sync —
 # repos materialize lazily via `multica repo checkout` during tasks.
 #
 # Multica home (`config.json` + `daemon.id`) comes from Secret projection
 # (or compose bind-mount of the same layout). There is NO Multica-home PVC —
-# only the workspaces volume is durable.
+# only the workspaces volume is durable (also holds AWS SSO cache).
 #
-# Missing secrets or binaries → non-zero exit (CrashLoop in K8s).
+# Missing Multica/Cursor/git secrets or binaries → non-zero exit (CrashLoop).
+# Missing AWS ConfigMaps → continue degraded (daemon still Ready).
 # Scratch shell: docker run --entrypoint /bin/bash ...
 set -euo pipefail
 
@@ -45,6 +47,11 @@ source /usr/local/bin/materialize-secrets.sh
 
 export MULTICA_DAEMON_ID="${MULTICA_DAEMON_ID:-$MULTICA_AGENT_RUNTIME_NAME}"
 
+# ── 2a. Optional AWS ConfigMaps + SSO cache on workspaces PVC ─────────────
+# shellcheck disable=SC1091
+source /usr/local/bin/materialize-aws.sh
+
+
 # ── 2b. Daemon log level (collection-side) ────────────────────────────────
 # `multica daemon start` has no --log-level flag and there is no log-level
 # env/config key (CLI 0.8.0); its handler level is fixed at debug and writes
@@ -71,6 +78,8 @@ require_bin git
 require_bin jq
 require_bin curl
 require_bin asdf
+require_bin aws
+require_bin aws-sso
 require_bin awk
 require_bin grep
 
@@ -113,11 +122,11 @@ if [ -r "$GIT_AUTH_ENV" ]; then
 fi
 
 # ── 4c. AWS credential source (informational only) ────────────────────────
-# The image ships the AWS CLI with zero credential plumbing of its own: the SDK
-# default chain resolves creds from IRSA, an instance/task role, or a mounted
-# config file. Log which source wins so an agent's "Unable to locate
-# credentials" is debuggable from `docker logs` without exec'ing in. Never
-# fatal, and the helper prints no credential values (bin/aws-credential-source.sh).
+# The image ships AWS CLI + aws-sso with no baked credentials. SDK default chain
+# may resolve IRSA / instance role / mounted config; ConfigMap aws-sso profiles
+# land via materialize-aws.sh on the workspaces PVC. Log which source wins so
+# "Unable to locate credentials" is debuggable from docker logs. Never fatal;
+# helper prints no credential values (bin/aws-credential-source.sh).
 if [ -x /usr/local/bin/aws-credential-source.sh ]; then
   log "aws auth: $(/usr/local/bin/aws-credential-source.sh 2>/dev/null || printf 'source detection failed')"
 fi

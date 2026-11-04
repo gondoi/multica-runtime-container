@@ -88,11 +88,22 @@ spec:
             - name: git
               mountPath: /run/secrets/git
               readOnly: true
-            # Optional — AWS auth tier 3 (mounted config/credentials). Requires
-            # the `aws` volume below AND the matching Secret to exist.
+            # Optional — AWS auth tier 3 static keys (mounted config/credentials).
+            # Requires the `aws` volume below AND the matching Secret to exist.
             # - name: aws
             #   mountPath: /run/secrets/aws
             #   readOnly: true
+            # AWS ConfigMaps (subPath) — SSO cache on workspaces PVC via
+            # entrypoint links under .provider-homes/{aws,aws-sso}/.
+            - name: aws-config
+              mountPath: /run/config/aws/config
+              subPath: config
+              readOnly: true
+            - name: aws-sso-config
+              mountPath: /run/config/aws-sso/config.yaml
+              subPath: config.yaml
+              readOnly: true
+
           startupProbe:
             exec:
               command: ["/usr/local/bin/ready.sh"]
@@ -136,13 +147,25 @@ spec:
             items:
               - key: GITHUB_TOKEN
                 path: GITHUB_TOKEN
-        # Optional — AWS auth tier 3 only (static keys in a Secret are the
-        # least-preferred option; prefer IRSA via serviceaccount.yaml).
+        # Optional — AWS auth tier 3 static keys (least preferred; prefer IRSA).
         # - name: aws
         #   secret:
-        #     secretName: multica-runtime-aws
+        #     secretName: multica-runtime-aws-static
         #     items:
         #       - key: config
         #         path: config
         #       - key: credentials
         #         path: credentials
+        - name: aws-config
+          configMap:
+            name: multica-runtime-aws
+            items:
+              - key: config
+                path: config
+        - name: aws-sso-config
+          configMap:
+            name: multica-runtime-aws-sso
+            items:
+              - key: config.yaml
+                path: config.yaml
+

@@ -32,12 +32,13 @@ GitHub Actions (`.github/workflows/docker-publish.yml`) builds **linux/amd64 + l
 | `asdf` | Versioned tool plugins (languages / CLIs) on the workspaces volume |
 | `git`, `openssh-client`, `jq`, `curl`, `procps` | Checkout, scripting, readiness probes |
 | `gh` (GitHub CLI) | Agent tooling (`gh pr create`, `gh api`, `gh run`); authenticates from the resolved tier — App tier re-mints per invocation |
-| `aws` (AWS CLI v2) | Agent tooling to inspect/manage AWS resources; auth resolved by the SDK default chain (IRSA / instance profile / mounted config) — no keys baked in |
+| `aws` (AWS CLI v2) | Agent tooling to inspect/manage AWS resources; auth resolved by the SDK default chain (IRSA / instance profile / mounted config / aws-sso) — no keys baked in |
+| `aws-sso` | Upstream synfinatic CLI at `/usr/local/bin/aws-sso` (guard → `/usr/local/libexec/aws-sso`); operator-exec login only |
 | `tini` | PID 1 — reaps orphans, forwards signals |
 | non-root `agent` user | Default runtime identity |
 | `/usr/local/bin/ready.sh` | Shallow Ready probe (daemon up — not full inventory) |
 
-**Not** in the image: language toolchains (install via asdf at runtime), AWS credentials of any kind, multi-CLI agent sets (Claude/Codex/etc.), or any private consumer inventory.
+**Not** in the image: language toolchains (install via asdf at runtime), AWS credentials of any kind, multi-CLI agent sets (Claude/Codex/etc.), or any private consumer AWS allowlist / inventory.
 
 ## Boot contract
 
@@ -45,11 +46,12 @@ Order:
 
 1. Source config (`.env` / Secret env-file mounts)
 2. Materialize Secret-projected Multica home (`config.json` + `daemon.id`) into ephemeral `~/.multica`; load Cursor/git token (and optional GitHub App) files
-3. Hard gates — required binaries (`multica`, `cursor-agent`, `git`, `jq`, `curl`, `asdf`, `openssl`) and secrets (Multica auth, `CURSOR_API_KEY`, forge token **or** GitHub App credentials **or** GitHub Enterprise Server password pair)
-4. Configure git HTTPS credential helper (static store and/or GitHub App installation-token helper), resolving GitHub auth as **App → PAT → password**; seed `GH_TOKEN` in the daemon environment so the `gh` CLI is authenticated too
-5. `multica login` (token refresh) → **re-pin workspace** (login can clobber `workspace_id`) → `exec multica daemon start --foreground`
+3. Wire optional AWS ConfigMaps into PVC-backed `~/.aws` + `~/.config/aws-sso` (SSO cache on workspaces volume)
+4. Hard gates — required binaries (`multica`, `cursor-agent`, `gh`, `git`, `jq`, `curl`, `asdf`, `aws`, `aws-sso`) and secrets (Multica auth, `CURSOR_API_KEY`, forge token **or** GitHub App / GHES credentials)
+5. Configure git HTTPS credential helper; validate `MULTICA_LOG_LEVEL`; report AWS credential source
+6. `multica login` (token refresh) → **re-pin workspace** → daemon start --foreground
 
-**Ready** = daemon is up after gates. **Crash** = missing secret/binary/git-auth (non-zero exit → CrashLoop).
+**Ready** = daemon is up after gates. **Crash** = missing Multica/Cursor/git secret or required binary (non-zero exit → CrashLoop). Missing AWS ConfigMaps → continue degraded (daemon still Ready).
 
 **Workspace pin** (after login): `MULTICA_WORKSPACE` (preferred; slug, display name, or UUID) → `MULTICA_WORKSPACE_ID` (same resolution) → projected Secret `config.json` `.workspace_id` → leave login default.
 
@@ -96,6 +98,30 @@ Tiers are ordered **most → least secure for managed credentials**. `bin/config
 - PAT tier: `GH_TOKEN` is static, like the git credential.
 - Password tier: gh stays unauthenticated (gh has no password auth); use tier 1 or 2 when agents need `gh pr create`/`gh api`.
 - SSH/deploy keys are deliberately **not** a tier — git auth here is HTTPS-only.
+
+### AWS profiles (ConfigMaps + PVC cache)
+
+| ConfigMap / file | Mount path | Purpose |
+| --- | --- | --- |
+| `multica-runtime-aws` → `config` | `/run/config/aws/config` | Literal `~/.aws/config` (`credential_process` → `/usr/local/bin/aws-sso`) |
+| `multica-runtime-aws-sso` → `config.yaml` | `/run/config/aws-sso/config.yaml` | aws-sso StartUrl / UrlAction=print / profile format |
+
+Entrypoint links those files into **workspaces PVC** provider homes (`.provider-homes/aws` and `.provider-homes/aws-sso`) so the SSO token cache survives recreate. Published examples ship **generic stubs** only — curated account allowlists stay in a private overlay.
+
+- **`AWS_PROFILE` unset** — callers pass `--profile` / `AWS_PROFILE` per command.
+- **Login is operator-exec only.** Agents must not drive SSO:
+
+```bash
+# Compose
+docker compose exec -e AWS_SSO_OPERATOR_LOGIN=1 runtime \
+  aws-sso login --url-action=print
+
+# Kubernetes
+kubectl exec -it deploy/multica-runtime -n <ns> -- \
+  env AWS_SSO_OPERATOR_LOGIN=1 aws-sso login --url-action=print
+```
+
+Without `AWS_SSO_OPERATOR_LOGIN=1`, `aws-sso login` exits non-zero (guard wrapper). Dead cache → AWS calls fail closed until an operator re-logins. Details: [`examples/aws/`](examples/aws/).
 
 ### GitHub App git auth (no PAT)
 
@@ -163,7 +189,7 @@ Smoke that baseline binaries exist:
 
 ```bash
 docker run --rm --entrypoint /bin/bash multica-runtime:local -lc \
-  'command -v multica cursor-agent gh aws asdf git ssh jq curl tini ready.sh materialize-secrets.sh && gh --version && aws --version'
+  'command -v multica cursor-agent gh aws aws-sso asdf git ssh jq curl tini ready.sh materialize-secrets.sh materialize-aws.sh && gh --version && aws --version && aws-sso version'
 ```
 
 ### Compose (laptop parity)
@@ -258,9 +284,9 @@ Consequences worth knowing:
 ## Design notes
 
 - Repos are **not** cloned at image build or at container start. Register them in Multica workspace/project metadata; materialize with `multica repo checkout` during tasks (first task may cold-clone).
-- `asdf` is installed with plugin-install capability; pin tool versions on the workspaces volume, not in the image.
+- `asdf` is installed with plugin-install capability; pin tool versions (including AWS CLI) on the workspaces volume, not in the image. Upstream `aws-sso` is image-pinned at a fixed path for stable `credential_process` lines.
 - Patterns inspired by community Multica runtimes (`tini`, non-root user, forge HTTPS helpers) — adapted for a Cursor-first, asdf-based baseline.
-- AWS CLI is installed with no credential plumbing of its own — see [AWS CLI auth tiers](#aws-auth-tiers). `aws-sso` / `aws configure sso` wiring is still deferred (SSO needs an interactive browser step that doesn't fit a headless container).
+- AWS CLI ships with no baked credentials — prefer IRSA / instance role (see [AWS CLI auth tiers](#aws-auth-tiers)). ConfigMap `aws-sso` profiles + operator-exec login are supported for homelab (see [AWS profiles](#aws-profiles-configmaps--pvc-cache)); SSO cache lives on the workspaces PVC.
 
 ## License
 
