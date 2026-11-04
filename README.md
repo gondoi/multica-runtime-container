@@ -29,6 +29,7 @@ GitHub Actions (`.github/workflows/docker-publish.yml`) builds **linux/amd64 + l
 | `cursor-agent` | First agent provider (Cursor) |
 | `asdf` | Versioned tool plugins (languages / CLIs) on the workspaces volume |
 | `git`, `openssh-client`, `jq`, `curl`, `procps` | Checkout, scripting, readiness probes |
+| `gh` (GitHub CLI) | Agent tooling (`gh pr create`, `gh api`, `gh run`); authenticates from the resolved tier — App tier re-mints per invocation |
 | `tini` | PID 1 — reaps orphans, forwards signals |
 | non-root `agent` user | Default runtime identity |
 | `/usr/local/bin/ready.sh` | Shallow Ready probe (daemon up — not full inventory) |
@@ -41,8 +42,8 @@ Order:
 
 1. Source config (`.env` / Secret env-file mounts)
 2. Materialize Secret-projected Multica home (`config.json` + `daemon.id`) into ephemeral `~/.multica`; load Cursor/git token (and optional GitHub App) files
-3. Hard gates — required binaries (`multica`, `cursor-agent`, `git`, `jq`, `curl`, `asdf`, `openssl`) and secrets (Multica auth, `CURSOR_API_KEY`, forge token **or** GitHub App credentials)
-4. Configure git HTTPS credential helper (static store and/or GitHub App installation-token helper)
+3. Hard gates — required binaries (`multica`, `cursor-agent`, `git`, `jq`, `curl`, `asdf`, `openssl`) and secrets (Multica auth, `CURSOR_API_KEY`, forge token **or** GitHub App credentials **or** GitHub Enterprise Server password pair)
+4. Configure git HTTPS credential helper (static store and/or GitHub App installation-token helper), resolving GitHub auth as **App → PAT → password**; seed `GH_TOKEN` in the daemon environment so the `gh` CLI is authenticated too
 5. `multica login` (token refresh) → **re-pin workspace** (login can clobber `workspace_id`) → `exec multica daemon start --foreground`
 
 **Ready** = daemon is up after gates. **Crash** = missing secret/binary/git-auth (non-zero exit → CrashLoop).
@@ -63,8 +64,35 @@ Multica home is **Secret-projected** — there is **no** Multica-home PVC. Only 
 | `CURSOR_API_KEY` | `/run/secrets/cursor/CURSOR_API_KEY` | Cursor agent |
 | `GITHUB_TOKEN` (etc.) | `/run/secrets/git/GITHUB_TOKEN` | git HTTPS via static PAT (personal / orgs that allow PATs) |
 | `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY` | `/run/secrets/git/` | git HTTPS via short-lived App installation tokens (org-safe; preferred when PATs are banned) |
+| `GITHUB_USER`, `GITHUB_PASSWORD` | `/run/secrets/git/` | git HTTPS via username + password — **GitHub Enterprise Server only**, lowest priority |
+| `GITHUB_HOST` | `/run/secrets/git/GITHUB_HOST` | GitHub host for all three GitHub tiers (default `github.com`) |
 
-Provide **either** a static forge token **or** the GitHub App trio (App wins for `github.com` when both are present). Env vars override files when set. Layout details: [`examples/secrets/`](examples/secrets/). Kubernetes examples: [`examples/k8s/`](examples/k8s/).
+Provide **either** a static forge token, **or** the GitHub App trio, **or** a GHES username/password pair — the GitHub tier is picked by precedence (next section). Env vars override files when set. Layout details: [`examples/secrets/`](examples/secrets/). Kubernetes examples: [`examples/k8s/`](examples/k8s/).
+
+### GitHub auth precedence (App > PAT > password)
+
+Tiers are ordered **most → least secure for managed credentials**. `bin/configure-git-auth.sh` resolves exactly one GitHub tier — the first **complete** one wins:
+
+| Tier | Credentials | Result | gh CLI |
+| --- | --- | --- | --- |
+| 1 · App (best) | `GITHUB_APP_ID` + `GITHUB_APP_INSTALLATION_ID` + PEM | live credential helper; remints installation tokens before the ~1h expiry | `gh` wrapper re-mints per invocation — never goes stale |
+| 2 · PAT | `GITHUB_TOKEN` | static `~/.git-credentials` entry, username `GITHUB_USER` (default `x-access-token`) | `GH_TOKEN` in the daemon env |
+| 3 · Password (fallback) | `GITHUB_USER` + `GITHUB_PASSWORD` | static `~/.git-credentials` entry, percent-encoded (git decodes on read) | unauthenticated — gh has no password auth; git still works |
+
+- An **incomplete** higher tier falls through: App ID + installation ID without a PEM → PAT → password.
+- **Force a tier** with `GITHUB_AUTH_TIER=app|token|password` when more than one is configured (e.g. App present but you want to test a PAT). A forced tier that is incomplete is a hard boot error — never a silent fallback.
+- **github.com removed password (basic) auth for git-over-HTTPS in Aug 2021.** A password-only config pointed at `github.com` therefore **hard-fails at boot** with an actionable message instead of writing credentials that clone would reject. Set `GITHUB_HOST` to a GitHub Enterprise Server host (e.g. `ghe.example.com`) to use tier 3; the App tier then derives its API base as `https://<host>/api/v3`, and `GITHUB_API_URL` still overrides.
+- `GITHUB_HOST` selects the host for all three GitHub tiers (not GitHub Enterprise-aware for other forges — GitLab/Gitea settings are independent).
+- Boot logs the chosen tier (`git HTTPS: GitHub auth tier=…`) and never echoes `GITHUB_PASSWORD`, the PAT, or the App PEM.
+
+### `gh` CLI auth
+
+`gh` is installed (`/usr/local/bin/gh-real`) behind a thin wrapper (`/usr/local/bin/gh`, [`bin/gh-wrapper.sh`](bin/gh-wrapper.sh)). `configure-git-auth.sh` writes `~/.multica/git-auth.env` (0600) with `GH_TOKEN`/`GITHUB_TOKEN`/`GH_HOST` for the resolved tier and the entrypoint exports it, so the daemon and the tasks it spawns inherit gh auth without the token ever being logged. There is no interactive `gh auth login`: the container is headless and `~` is ephemeral, so state is re-derived from the tier at every boot instead of persisted.
+
+- App tier: the wrapper **re-mints the installation token on each `gh` call**, so a long-running container never hits the ~1h expiry (`gh --version`/`help` skip the mint). If a mint fails the command runs with the boot token rather than erroring.
+- PAT tier: `GH_TOKEN` is static, like the git credential.
+- Password tier: gh stays unauthenticated (gh has no password auth); use tier 1 or 2 when agents need `gh pr create`/`gh api`.
+- SSH/deploy keys are deliberately **not** a tier — git auth here is HTTPS-only.
 
 ### GitHub App git auth (no PAT)
 
@@ -90,7 +118,7 @@ Smoke that baseline binaries exist:
 
 ```bash
 docker run --rm --entrypoint /bin/bash multica-runtime:local -lc \
-  'command -v multica cursor-agent asdf git ssh jq curl tini ready.sh materialize-secrets.sh'
+  'command -v multica cursor-agent gh asdf git ssh jq curl tini ready.sh materialize-secrets.sh && gh --version'
 ```
 
 ### Compose (laptop parity)
@@ -114,6 +142,12 @@ Automated fixture check (stub Multica for happy path — no live cloud required)
 ./test/boot/run-seam.sh
 ```
 
+Fast unit suites (auth precedence + App token mint; no Docker, no network):
+
+```bash
+./test/unit/run-unit.sh
+```
+
 ## Configuration (placeholders)
 
 See [`.env.example`](.env.example) for optional non-secret knobs. Tokens prefer Secret file mounts under `secrets/` — never bake them into layers.
@@ -123,8 +157,10 @@ See [`.env.example`](.env.example) for optional non-secret knobs. Tokens prefer 
 | `secrets/multica-home/config.json` | Multica PAT + server/workspace (**required** unless `MULTICA_TOKEN` env) |
 | `secrets/multica-home/daemon.id` | Stable daemon id across recreates |
 | `secrets/cursor/CURSOR_API_KEY` | Cursor agent auth (**required**) |
-| `secrets/git/GITHUB_TOKEN` | git HTTPS PAT (**required** unless GitLab/Gitea **or** GitHub App trio) |
+| `secrets/git/GITHUB_TOKEN` | git HTTPS PAT (**required** unless GitLab/Gitea **or** GitHub App trio **or** GHES password pair) |
 | `secrets/git/GITHUB_APP_*` | App ID + installation ID + PEM (alternative to `GITHUB_TOKEN`) |
+| `secrets/git/GITHUB_USER` + `GITHUB_PASSWORD` | GitHub Enterprise Server password pair (lowest priority; `github.com` rejects it) |
+| `secrets/git/GITHUB_HOST` | GitHub host for all GitHub tiers (default `github.com`) |
 | `MULTICA_WORKSPACES_ROOT` | Configurable workspaces root (default `/home/agent/workspaces`) |
 | `MULTICA_LOG_LEVEL` | Log level mirrored to container stdout: `DEBUG` \| `INFO` (default) \| `WARN` \| `ERROR`. See [Daemon log level](#daemon-log-level-multica_log_level). |
 | `MULTICA_WORKSPACE` | Default workspace after login: slug, display name, or UUID (e.g. `fuel-labs`). Fallback: `MULTICA_WORKSPACE_ID`, then Secret `config.json` `.workspace_id`. |

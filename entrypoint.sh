@@ -65,6 +65,7 @@ require_bin() {
 
 require_bin multica
 require_bin cursor-agent
+require_bin gh
 require_bin git
 require_bin jq
 require_bin curl
@@ -90,10 +91,25 @@ if [ -n "${GITHUB_APP_ID:-}" ] && [ -n "${GITHUB_APP_INSTALLATION_ID:-}" ]; then
     have_git_token=1
   fi
 fi
-[ "$have_git_token" = 1 ] || die "git HTTPS auth required: set GITHUB_TOKEN and/or GITLAB_TOKEN and/or GITEA_TOKEN, or GitHub App credentials (GITHUB_APP_ID + GITHUB_APP_INSTALLATION_ID + PEM) under /run/secrets/git/"
+# Lowest-priority tier: GitHub Enterprise Server username + password (see configure-git-auth.sh).
+if [ -n "${GITHUB_USER:-}" ] && [ -n "${GITHUB_PASSWORD:-}" ]; then
+  have_git_token=1
+fi
+[ "$have_git_token" = 1 ] || die "git HTTPS auth required: set GITHUB_TOKEN and/or GITLAB_TOKEN and/or GITEA_TOKEN, GitHub App credentials (GITHUB_APP_ID + GITHUB_APP_INSTALLATION_ID + PEM), or GitHub Enterprise Server username + password (GITHUB_USER + GITHUB_PASSWORD) under /run/secrets/git/"
 
 # ── 4. Git credential helper (hard-fail if helper cannot configure) ───────
 /usr/local/bin/configure-git-auth.sh
+
+# gh CLI reads GH_TOKEN/GITHUB_TOKEN (+ GH_HOST for GHES) from the daemon
+# environment. configure-git-auth.sh writes them to a 0600 file so the token is
+# never logged; source it here to hand them to the daemon and child tasks.
+GIT_AUTH_ENV="${MULTICA_HOME:-$HOME/.multica}/git-auth.env"
+if [ -r "$GIT_AUTH_ENV" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$GIT_AUTH_ENV"
+  set +a
+fi
 
 # Export Cursor key for cursor-agent (Secret / env-file / file-mount parity).
 export CURSOR_API_KEY

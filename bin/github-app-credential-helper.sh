@@ -4,8 +4,10 @@
 # refresh across the ~1h installation-token lifetime without pod restart.
 #
 # Configure (see configure-git-auth.sh):
-#   git config --global credential.https://github.com.helper \
+#   git config --global credential.https://<host>.helper \
 #     '!/usr/local/bin/github-app-credential-helper.sh'
+#
+# Host: GITHUB_HOST (default github.com) — set for GitHub Enterprise Server.
 #
 # Protocol: https://git-scm.com/docs/gitcredentials
 set -euo pipefail
@@ -33,12 +35,13 @@ while IFS= read -r line || [ -n "$line" ]; do
   esac
 done
 
-# Only handle github.com over https (ignore other hosts / SSH).
+# Only handle the configured GitHub host over https (ignore other hosts / SSH).
 if [ "${protocol:-https}" != "https" ]; then
   exit 0
 fi
+gh_host="${GITHUB_HOST:-github.com}"
 case "$host" in
-  github.com|www.github.com) ;;
+  "$gh_host"|"www.$gh_host") ;;
   *) exit 0 ;;
 esac
 

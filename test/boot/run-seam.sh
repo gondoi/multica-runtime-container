@@ -29,6 +29,7 @@ fail=0
 cname_env=""
 cname_proj=""
 cname_slug=""
+cname_pwd=""
 cname_lvl=""
 
 ok() { printf 'PASS  %s\n' "$*"; pass=$((pass + 1)); }
@@ -38,6 +39,7 @@ cleanup() {
   [ -n "$cname_env" ] && docker rm -f "$cname_env" >/dev/null 2>&1 || true
   [ -n "$cname_proj" ] && docker rm -f "$cname_proj" >/dev/null 2>&1 || true
   [ -n "$cname_slug" ] && docker rm -f "$cname_slug" >/dev/null 2>&1 || true
+  [ -n "$cname_pwd" ] && docker rm -f "$cname_pwd" >/dev/null 2>&1 || true
   [ -n "$cname_lvl" ] && docker rm -f "$cname_lvl" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -48,8 +50,22 @@ docker build -t "$IMAGE" .
 chmod +x "$STUB" "$ROOT/entrypoint.sh" \
   "$ROOT/bin/configure-git-auth.sh" "$ROOT/bin/materialize-secrets.sh" \
   "$ROOT/bin/mint-github-app-token.sh" "$ROOT/bin/github-app-credential-helper.sh" \
-  "$ROOT/bin/log-level-filter.sh" \
+  "$ROOT/bin/gh-wrapper.sh" "$ROOT/bin/log-level-filter.sh" \
   "$ROOT/bin/ready.sh"
+
+wait_log() {
+  # wait_log <container> <grep-pattern> [tries] — docker's log driver can lag the
+  # container by a beat, so a single `docker logs` right after an exec-based
+  # readiness check is racy. Poll instead of failing on a partial flush.
+  local cname="$1" pattern="$2" tries="${3:-10}" i
+  for i in $(seq 1 "$tries"); do
+    if docker logs "$cname" 2>&1 | grep -q -- "$pattern"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
 
 run_crash() {
   local name="$1" envfile="$2"
@@ -103,6 +119,7 @@ run_crash no-multica "$FIX/crash-no-multica.env"
 run_crash no-cursor "$FIX/crash-no-cursor.env"
 run_crash no-git "$FIX/crash-no-git.env"
 run_crash bad-log-level "$FIX/crash-bad-log-level.env"
+run_crash github-password-public "$FIX/crash-github-password-public.env"
 
 echo "==> Happy path — env-file secrets (stub multica → Ready)"
 cname_env="multica-boot-seam-env-$$"
@@ -151,11 +168,32 @@ else
 fi
 
 # Ready with projected Cursor key (no CURSOR_API_KEY in env-file) proves file mount worked.
-if docker logs "$cname_proj" 2>&1 | grep -q 'gates passed'; then
+if wait_log "$cname_proj" 'gates passed'; then
   ok "CURSOR_API_KEY gate passed via projected file mount"
 else
   bad "projected Cursor key path did not reach gates-passed"
   docker logs "$cname_proj" >&2 || true
+fi
+
+# gh CLI: shipped in the image and authenticated from the daemon environment
+# (configure-git-auth.sh seeds git-auth.env; entrypoint exports it).
+if docker exec "$cname_proj" gh --version >/dev/null 2>&1; then
+  ok "gh CLI present in image (wrapper → gh-real, no mint without App creds)"
+else
+  bad "gh CLI missing from image"
+fi
+if docker exec "$cname_proj" grep -qx 'GH_TOKEN=ghp_boot_seam_projected' /home/agent/.multica/git-auth.env; then
+  ok "git-auth.env seeds GH_TOKEN for gh from the resolved tier"
+else
+  bad "git-auth.env missing GH_TOKEN seed"
+  docker exec "$cname_proj" cat /home/agent/.multica/git-auth.env >&2 || true
+fi
+daemon_pid="$(docker exec "$cname_proj" pgrep -f 'sleep infinity' 2>/dev/null | head -1 || true)"
+if [ -n "$daemon_pid" ] \
+  && docker exec "$cname_proj" bash -c "tr '\\0' '\\n' < /proc/${daemon_pid}/environ | grep -qx 'GH_TOKEN=ghp_boot_seam_projected'"; then
+  ok "daemon environment carries GH_TOKEN (gh usable inside tasks)"
+else
+  bad "daemon environment is missing GH_TOKEN"
 fi
 
 # Compose contract: no Multica-home named volume at ~/.multica.
@@ -190,7 +228,7 @@ docker run -d --name "$cname_slug" \
 assert_ready_container "$cname_slug" "happy/slug Ready"
 slug_ws="$(docker exec "$cname_slug" jq -r '.workspace_id // empty' /home/agent/.multica/config.json 2>/dev/null || true)"
 if [ "$slug_ws" = "00000000-0000-0000-0000-000000000001" ] \
-  && docker logs "$cname_slug" 2>&1 | grep -q "workspace pin: default workspace_id=00000000-0000-0000-0000-000000000001 (from 'fuel-labs')"; then
+  && wait_log "$cname_slug" "workspace pin: default workspace_id=00000000-0000-0000-0000-000000000001 (from 'fuel-labs')"; then
   ok "MULTICA_WORKSPACE=fuel-labs resolves + pins after login"
 else
   bad "MULTICA_WORKSPACE slug pin failed: live='$slug_ws'"
@@ -215,7 +253,7 @@ else
   printf '%s\n' "$lvl_logs" >&2 || true
 fi
 
-if docker logs "$cname_proj" 2>&1 | grep -q 'daemon log stream level: INFO'; then
+if wait_log "$cname_proj" 'daemon log stream level: INFO'; then
   ok "entrypoint reports applied log level"
 else
   bad "entrypoint did not report applied log level"
@@ -244,6 +282,29 @@ if grep -q 'DBG stub debug line' <<<"$dbg_logs"; then
 else
   bad "MULTICA_LOG_LEVEL=DEBUG did not surface DBG records"
   printf '%s\n' "$dbg_logs" >&2 || true
+fi
+
+echo "==> Happy path — GitHub Enterprise Server password tier (lowest priority)"
+cname_pwd="multica-boot-seam-pwd-$$"
+docker run -d --name "$cname_pwd" \
+  --env-file "$FIX/happy-github-password.env" \
+  -v "$STUB:/usr/local/bin/multica:ro" \
+  -v "$SECRETS/multica-home:/run/secrets/multica-home:ro" \
+  -v "$SECRETS/cursor:/run/secrets/cursor:ro" \
+  -v "$SECRETS/git-password:/run/secrets/git-password:ro" \
+  "$IMAGE" >/dev/null
+assert_ready_container "$cname_pwd" "happy/github-password Ready"
+if docker exec "$cname_pwd" grep -q 'https://boot-seam-agent:boot-seam-password@ghes.boot-seam.invalid' /home/agent/.git-credentials; then
+  ok "password tier: User/Password/Host Secret files → git credential helper"
+else
+  bad "password tier: .git-credentials missing GHES host entry"
+  docker exec "$cname_pwd" cat /home/agent/.git-credentials >&2 || true
+  docker logs "$cname_pwd" >&2 || true
+fi
+if wait_log "$cname_pwd" 'GitHub password auth configured'; then
+  ok "password tier: boot logs the chosen tier"
+else
+  bad "password tier: boot did not log the chosen tier"
 fi
 
 cleanup

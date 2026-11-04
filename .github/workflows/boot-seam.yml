@@ -11,7 +11,7 @@ on:
       - bin/**
       - docker-compose.yml
       - examples/**
-      - test/boot/**
+      - test/**
       - .github/workflows/boot-seam.yml
   pull_request:
     paths:
@@ -20,7 +20,7 @@ on:
       - bin/**
       - docker-compose.yml
       - examples/**
-      - test/boot/**
+      - test/**
       - .github/workflows/boot-seam.yml
 
 concurrency:
@@ -28,6 +28,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run unit suites (no Docker, no network)
+        run: |
+          set -euo pipefail
+          chmod +x test/unit/run-unit.sh
+          ./test/unit/run-unit.sh
+
   seam:
     runs-on: ubuntu-latest
     steps:
