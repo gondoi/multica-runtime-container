@@ -180,9 +180,43 @@ fi
 pin_workspace_after_login
 
 log "gates passed; starting daemon (id=${MULTICA_DAEMON_ID} home=${MULTICA_HOME} workspaces=${MULTICA_WORKSPACES_ROOT})"
+
 # Ready = this process stays up. No ConfigMap inventory clone-all step.
-exec multica daemon start \
+#
+# The daemon writes its real operational log (task/run activity, not just
+# the boot banner) to $MULTICA_HOME/daemon.log regardless of --foreground;
+# `exec`-ing the daemon directly only surfaces whatever it prints on its
+# own stdout/stderr to `docker logs` / `kubectl logs`. Run it as a child and
+# stream `multica daemon logs --follow` as the container's foreground
+# process so task activity is visible without shelling in to tail files.
+multica daemon start \
   --foreground \
   --daemon-id "$MULTICA_DAEMON_ID" \
   --runtime-name "$MULTICA_AGENT_RUNTIME_NAME" \
-  --workspaces-root "$MULTICA_WORKSPACES_ROOT"
+  --workspaces-root "$MULTICA_WORKSPACES_ROOT" &
+DAEMON_PID=$!
+
+# Forward termination to the daemon so it can shut down gracefully; tini
+# (PID 1) delivers the signal to this script.
+forward_term() { kill -TERM "$DAEMON_PID" 2>/dev/null || true; }
+trap forward_term TERM INT
+
+# Wait for the daemon to come up before attaching the log follower.
+for _ in $(seq 1 50); do
+  multica daemon status >/dev/null 2>&1 && break
+  kill -0 "$DAEMON_PID" 2>/dev/null || die "daemon exited during startup"
+  sleep 0.2
+done
+
+log "daemon up; streaming daemon logs to container stdout"
+multica daemon logs --follow &
+LOGS_PID=$!
+
+# Exit (CrashLoop in K8s if unexpected) the moment either the daemon or the
+# log follower dies, so a crashed daemon isn't masked by a still-running tail.
+set +e
+wait -n "$DAEMON_PID" "$LOGS_PID"
+exit_code=$?
+set -e
+kill "$DAEMON_PID" "$LOGS_PID" 2>/dev/null || true
+exit "$exit_code"
