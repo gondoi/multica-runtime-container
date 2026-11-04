@@ -193,9 +193,14 @@ RUN chmod +x /usr/local/bin/agent-harness.sh \
     chown agent:agent /entrypoint.sh
 
 # asdf data dir on the workspaces volume path by default; plugins installable.
+# MULTICA_MACHINE_NAME is the runtime-list display name — every harness row on
+# this daemon shows it, e.g. "Cursor (fuel-general)" / "Claude (fuel-general)":
+#   docker run -e MULTICA_MACHINE_NAME=fuel-general ...
+# Unset = OS hostname, which in Kubernetes is the pod name.
 ENV ASDF_DATA_DIR=/home/agent/.asdf \
     PATH="/home/agent/.local/bin:/home/agent/.asdf/shims:/usr/local/bin:${PATH}" \
     MULTICA_AGENT_RUNTIME_NAME=multica-runtime \
+    MULTICA_MACHINE_NAME="" \
     MULTICA_WORKSPACES_ROOT=/home/agent/workspaces
 
 USER agent

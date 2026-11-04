@@ -40,6 +40,9 @@ services:
     environment:
       MULTICA_WORKSPACES_ROOT: /home/agent/workspaces
       MULTICA_AGENT_RUNTIME_NAME: ${MULTICA_AGENT_RUNTIME_NAME:-multica-runtime}
+      # Runtime-list display name: multica shows "<Provider> (<machine name>)".
+      # Unset = container hostname (the pod name under Kubernetes).
+      MULTICA_MACHINE_NAME: ${MULTICA_MACHINE_NAME:-}
       # Container-stdout daemon log level: DEBUG|INFO|WARN|ERROR (default INFO).
       MULTICA_LOG_LEVEL: ${MULTICA_LOG_LEVEL:-INFO}
       # Secret dirs match K8s projected mounts (see examples/k8s/).

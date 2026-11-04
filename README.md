@@ -83,6 +83,7 @@ Deployments (Compose, Kubernetes) should pin a release tag such as `v0.1.0`.
 Order:
 
 1. Source config (`.env` / Secret env-file mounts)
+1b. Resolve machine name (`MULTICA_MACHINE_NAME` → daemon `--device-name`, the runtime-list display name)
 2. Materialize Secret-projected Multica home (`config.json` + `daemon.id`) into ephemeral `~/.multica`; load Cursor/git token (and optional GitHub App) files
 3. Wire optional AWS ConfigMaps into PVC-backed `~/.aws` + `~/.config/aws-sso` (SSO cache on workspaces volume)
 4. Hard gates — required binaries (`multica`, `gh`, `git`, `jq`, `curl`, `asdf`, `aws`, `aws-sso`), Multica auth, forge token **or** GitHub App / GHES credentials, and every harness named by `MULTICA_AGENT_CLI` (`cursor` → `cursor-agent` + `CURSOR_API_KEY`; `claude` → `claude` + an Anthropic credential)
@@ -342,6 +343,50 @@ See [`.env.example`](.env.example) for optional non-secret knobs. Tokens prefer 
 | `MULTICA_LOG_LEVEL` | Log level mirrored to container stdout: `DEBUG` \| `INFO` (default) \| `WARN` \| `ERROR`. See [Daemon log level](#daemon-log-level-multica_log_level). |
 | `MULTICA_WORKSPACE` | Default workspace after login: slug, display name, or UUID (e.g. `fuel-labs`). Fallback: `MULTICA_WORKSPACE_ID`, then Secret `config.json` `.workspace_id`. |
 | `MULTICA_WORKSPACE_ID` | Legacy alias of `MULTICA_WORKSPACE` (same resolution) |
+| `MULTICA_MACHINE_NAME` | Runtime-list display name — runtimes appear as `<Provider> (<name>)`, e.g. `Cursor (fuel-general)`. Default: OS hostname (the pod name under Kubernetes). See [Machine name](#machine-name-multica_machine_name). |
+| `MULTICA_DAEMON_DEVICE_NAME` | Native CLI alias of `MULTICA_MACHINE_NAME` (set only one — differing values are a hard boot error) |
+
+## Machine name (`MULTICA_MACHINE_NAME`)
+
+Multica's runtime list shows one row per agent CLI harness, named
+**`<Provider> (<device-name>)`**. The device name comes from the daemon's
+`--device-name` (env `MULTICA_DAEMON_DEVICE_NAME`) and defaults to the OS
+hostname — which under Kubernetes is the **pod name**, so an unconfigured
+deployment shows up as `Cursor (multica-runtime-6cc749d9f7-dr2gh)` (and
+`Claude (multica-runtime-6cc749d9f7-dr2gh)` when both harnesses are enabled).
+
+Set `MULTICA_MACHINE_NAME` to name the deployment by its scope instead — every
+harness row on that daemon carries the same machine name:
+
+```bash
+docker run -e MULTICA_MACHINE_NAME=fuel-general … multica-runtime:local
+# → Cursor (fuel-general), Claude (fuel-general)
+# Kubernetes: uncomment MULTICA_MACHINE_NAME in examples/k8s/deployment.yaml
+```
+
+The entrypoint resolves the name before the hard gates, exports it as
+`MULTICA_DAEMON_DEVICE_NAME`, and passes `--device-name` to
+`multica daemon start` (only when set — an unset value keeps the CLI default,
+which is what you want on a laptop). Validation: 1–64 characters, no control
+characters, no leading/trailing whitespace, and it must not contradict an
+explicit `MULTICA_DAEMON_DEVICE_NAME`. Bad input is a hard boot failure, not a
+silent fallback. Boot logs the resolved name
+(`runtime machine name: 'fuel-general' …`).
+
+| Knob | Effect on the runtime list |
+| --- | --- |
+| `MULTICA_MACHINE_NAME` / `MULTICA_DAEMON_DEVICE_NAME` | `Cursor (fuel-general)` / `Claude (fuel-general)` — machine part of the default name (this image's option) |
+| `MULTICA_AGENT_RUNTIME_NAME` (`--runtime-name`) | **none** — verified against the CLI 0.8.0 `POST /api/daemon/register` payload: it sends `device_name` per runtime, never `runtime_name`. Kept for the daemon's fallback id. |
+| `multica runtime rename --machine <name>` | full custom display name (e.g. `fuel-general`, no provider prefix) — server-side `custom_name`, **not** a startup flag |
+
+Because `custom_name` is stored per runtime and the runtime row is keyed by the
+stable Secret-projected `daemon.id`, a one-time `multica runtime rename` survives
+container recreates — use it when the provider prefix should disappear:
+
+```bash
+multica runtime list --output json   # find the runtime id for this daemon
+multica runtime rename <runtime-id> fuel-general --machine
+```
 
 ## Daemon log level (`MULTICA_LOG_LEVEL`)
 
