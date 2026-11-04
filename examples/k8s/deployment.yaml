@@ -28,7 +28,7 @@ spec:
         fsGroup: 10001
       containers:
         - name: runtime
-          image: ghcr.io/gondoi/multica-runtime:sha-REPLACE
+          image: ghcr.io/gondoi/multica-runtime:vX.Y.Z
           imagePullPolicy: IfNotPresent
           env:
             - name: MULTICA_HOME_SECRET_DIR

@@ -33,9 +33,9 @@ kubectl apply -f examples/k8s/pvc.yaml
 kubectl apply -f examples/k8s/deployment.yaml
 ```
 
-Replace the image tag in `deployment.yaml` (`ghcr.io/gondoi/multica-runtime:sha-REPLACE`)
-with a real published tag — see the CI publish table in the README for the
-tag shapes (`v<semver>` or `sha-<12>`).
+Replace the image tag in `deployment.yaml` (`ghcr.io/gondoi/multica-runtime:vX.Y.Z`)
+with a published release tag — see the CI publish table in the README for the
+tag shapes (`vX.Y.Z` or `X.Y.Z`), e.g. `v0.1.0`.
 
 ### Verify
 

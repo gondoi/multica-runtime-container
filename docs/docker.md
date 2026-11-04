@@ -76,7 +76,7 @@ Bypass the hard gates (missing secrets/binaries) to poke around:
 ```bash
 docker compose run --rm --entrypoint bash runtime
 # or, without compose:
-docker run --rm -it --entrypoint /bin/bash ghcr.io/gondoi/multica-runtime:sha-<tag>
+docker run --rm -it --entrypoint /bin/bash ghcr.io/gondoi/multica-runtime:v0.1.0
 ```
 
 ### AWS access from the container
