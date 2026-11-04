@@ -37,6 +37,7 @@ cname_aws=""
 cname_pwd=""
 cname_lvl=""
 cname_claude=""
+cname_machine=""
 
 ok() { printf 'PASS  %s\n' "$*"; pass=$((pass + 1)); }
 bad() { printf 'FAIL  %s\n' "$*"; fail=$((fail + 1)); }
@@ -47,6 +48,7 @@ cleanup() {
   [ -n "$cname_slug" ] && docker rm -f "$cname_slug" >/dev/null 2>&1 || true
   [ -n "$cname_pwd" ] && docker rm -f "$cname_pwd" >/dev/null 2>&1 || true
   [ -n "$cname_lvl" ] && docker rm -f "$cname_lvl" >/dev/null 2>&1 || true
+  [ -n "$cname_machine" ] && docker rm -f "$cname_machine" >/dev/null 2>&1 || true
   [ -n "$cname_aws" ] && docker rm -f "$cname_aws" >/dev/null 2>&1 || true
   [ -n "$cname_claude" ] && docker rm -f "$cname_claude" >/dev/null 2>&1 || true
 }
@@ -135,6 +137,7 @@ run_crash unknown-harness "$FIX/crash-unknown-harness.env"
 run_crash no-git "$FIX/crash-no-git.env"
 run_crash bad-log-level "$FIX/crash-bad-log-level.env"
 run_crash github-password-public "$FIX/crash-github-password-public.env"
+run_crash machine-name-conflict "$FIX/crash-machine-name-conflict.env"
 
 echo "==> Happy path — env-file secrets (stub multica → Ready)"
 cname_env="multica-boot-seam-env-$$"
@@ -312,6 +315,37 @@ if grep -q 'DBG stub debug line' <<<"$dbg_logs"; then
 else
   bad "MULTICA_LOG_LEVEL=DEBUG did not surface DBG records"
   printf '%s\n' "$dbg_logs" >&2 || true
+fi
+
+echo "==> Happy path — MULTICA_MACHINE_NAME names the runtime in Multica's list"
+cname_machine="multica-boot-seam-machine-$$"
+docker run -d --name "$cname_machine" \
+  --env-file "$FIX/happy-projected.env" \
+  -e MULTICA_MACHINE_NAME=fuel-general \
+  -v "$STUB:/usr/local/bin/multica:ro" \
+  -v "$SECRETS/multica-home:/run/secrets/multica-home:ro" \
+  -v "$SECRETS/cursor:/run/secrets/cursor:ro" \
+  -v "$SECRETS/git:/run/secrets/git:ro" \
+  "$IMAGE" >/dev/null
+assert_ready_container "$cname_machine" "happy/machine-name Ready"
+if docker exec "$cname_machine" grep -q -- '--device-name fuel-general' /tmp/multica-runtime.ready.args; then
+  ok "MULTICA_MACHINE_NAME → daemon --device-name (runtime list shows 'Cursor (fuel-general)')"
+else
+  bad "daemon was not started with --device-name from MULTICA_MACHINE_NAME"
+  docker exec "$cname_machine" cat /tmp/multica-runtime.ready.args >&2 || true
+  docker logs "$cname_machine" >&2 || true
+fi
+if wait_log "$cname_machine" "runtime machine name: 'fuel-general'"; then
+  ok "boot reports the resolved machine name"
+else
+  bad "entrypoint did not report the resolved machine name"
+  docker logs "$cname_machine" >&2 || true
+fi
+# Unset → no --device-name override, so the CLI keeps its own (hostname) default.
+if docker exec "$cname_proj" grep -q -- '--device-name' /tmp/multica-runtime.ready.args; then
+  bad "daemon got a --device-name override without MULTICA_MACHINE_NAME"
+else
+  ok "unset MULTICA_MACHINE_NAME leaves the daemon's hostname default alone"
 fi
 
 echo "==> Happy path — GitHub Enterprise Server password tier (lowest priority)"

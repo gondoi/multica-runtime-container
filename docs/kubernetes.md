@@ -37,6 +37,14 @@ Replace the image tag in `deployment.yaml` (`ghcr.io/gondoi/multica-runtime:vX.Y
 with a published release tag — see the CI publish table in the README for the
 tag shapes (`vX.Y.Z` or `X.Y.Z`), e.g. `v0.1.0`.
 
+Name the deployment by its scope so Multica's runtime list is readable —
+uncomment `MULTICA_MACHINE_NAME` in `deployment.yaml` (or set it in your GitOps
+overlay); the row shows `Cursor (fuel-general)` / `Claude (fuel-general)` instead of
+`Cursor (multica-runtime-6cc749d9f7-dr2gh)`. Full custom names (no provider
+prefix) are a one-time `multica runtime rename <id> <name> --machine` and are
+kept per runtime, so they survive pod recreates. Details:
+[Machine name](../README.md#machine-name-multica_machine_name).
+
 ### Verify
 
 ```bash

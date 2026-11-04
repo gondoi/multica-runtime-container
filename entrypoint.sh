@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Multica runtime home-base boot contract (minimal / Multica-native):
 #   1. Source config / helpers
+#   1b. Resolve machine name (runtime-list display name)
 #   2. Materialize Secret-projected Multica home + Cursor/git tokens
 #   2a. Wire optional AWS ConfigMaps + SSO cache onto workspaces PVC
 #   3. Hard-fail gates (required binaries + Multica/git-auth secrets, plus the
@@ -39,6 +40,38 @@ done
 export MULTICA_AGENT_RUNTIME_NAME="${MULTICA_AGENT_RUNTIME_NAME:-multica-runtime}"
 export MULTICA_WORKSPACES_ROOT="${MULTICA_WORKSPACES_ROOT:-/home/agent/workspaces}"
 mkdir -p "$MULTICA_WORKSPACES_ROOT"
+
+# ── 1b. Machine name → runtime-list display name ──────────────────────────
+# Multica names each runtime "<Provider> (<device-name>)" (e.g. "Cursor
+# (fuel-general)"), where the device name is the daemon's `--device-name`
+# (env MULTICA_DAEMON_DEVICE_NAME) and defaults to the OS hostname — which in
+# Kubernetes is the pod name (multica-runtime-6cc749d9f7-dr2gh).
+# MULTICA_MACHINE_NAME is this image's knob for it; the native CLI env is
+# accepted as an alias. `--runtime-name` (MULTICA_AGENT_RUNTIME_NAME) does NOT
+# feed that name for built-in providers — verified against the CLI 0.8.0
+# registration payload (device_name is sent, runtime_name is not).
+MULTICA_MACHINE_NAME="${MULTICA_MACHINE_NAME:-}"
+MULTICA_DAEMON_DEVICE_NAME="${MULTICA_DAEMON_DEVICE_NAME:-}"
+if [ -n "$MULTICA_MACHINE_NAME" ] && [ -n "$MULTICA_DAEMON_DEVICE_NAME" ] \
+  && [ "$MULTICA_MACHINE_NAME" != "$MULTICA_DAEMON_DEVICE_NAME" ]; then
+  die "MULTICA_MACHINE_NAME='${MULTICA_MACHINE_NAME}' conflicts with MULTICA_DAEMON_DEVICE_NAME='${MULTICA_DAEMON_DEVICE_NAME}' — set only one"
+fi
+MULTICA_MACHINE_NAME="${MULTICA_MACHINE_NAME:-$MULTICA_DAEMON_DEVICE_NAME}"
+if [ -n "$MULTICA_MACHINE_NAME" ]; then
+  case "$MULTICA_MACHINE_NAME" in
+    *[[:cntrl:]]*) die "MULTICA_MACHINE_NAME must not contain control characters (got '${MULTICA_MACHINE_NAME}')" ;;
+  esac
+  case "$MULTICA_MACHINE_NAME" in
+    " "*|*" ") die "MULTICA_MACHINE_NAME must not start or end with whitespace (got '${MULTICA_MACHINE_NAME}')" ;;
+  esac
+  [ "${#MULTICA_MACHINE_NAME}" -le 64 ] \
+    || die "MULTICA_MACHINE_NAME must be 64 characters or fewer (got ${#MULTICA_MACHINE_NAME})"
+  MULTICA_DAEMON_DEVICE_NAME="$MULTICA_MACHINE_NAME"
+  export MULTICA_DAEMON_DEVICE_NAME
+  log "runtime machine name: '${MULTICA_MACHINE_NAME}' (runtime list shows '<Provider> (${MULTICA_MACHINE_NAME})')"
+else
+  log "runtime machine name: default (OS hostname) — set MULTICA_MACHINE_NAME for a readable runtime-list name"
+fi
 
 SERVER_URL="${MULTICA_SERVER_URL:-https://api.multica.ai}"
 APP_URL="${MULTICA_APP_URL:-https://multica.ai}"
@@ -246,7 +279,7 @@ fi
 # Keep intended workspace authoritative across login side-effects.
 pin_workspace_after_login
 
-log "gates passed; starting daemon (id=${MULTICA_DAEMON_ID} home=${MULTICA_HOME} workspaces=${MULTICA_WORKSPACES_ROOT})"
+log "gates passed; starting daemon (id=${MULTICA_DAEMON_ID} machine=${MULTICA_MACHINE_NAME:-<hostname>} home=${MULTICA_HOME} workspaces=${MULTICA_WORKSPACES_ROOT})"
 
 # Ready = this process stays up. No ConfigMap inventory clone-all step.
 #
@@ -256,11 +289,19 @@ log "gates passed; starting daemon (id=${MULTICA_DAEMON_ID} home=${MULTICA_HOME}
 # own stdout/stderr to `docker logs` / `kubectl logs`. Run it as a child and
 # stream `multica daemon logs --follow` as the container's foreground
 # process so task activity is visible without shelling in to tail files.
-multica daemon start \
-  --foreground \
-  --daemon-id "$MULTICA_DAEMON_ID" \
-  --runtime-name "$MULTICA_AGENT_RUNTIME_NAME" \
-  --workspaces-root "$MULTICA_WORKSPACES_ROOT" &
+daemon_args=(
+  --foreground
+  --daemon-id "$MULTICA_DAEMON_ID"
+  --runtime-name "$MULTICA_AGENT_RUNTIME_NAME"
+  --workspaces-root "$MULTICA_WORKSPACES_ROOT"
+)
+# Only pass --device-name when a machine name was configured; otherwise the CLI
+# keeps its own default (OS hostname), which is the right thing for laptops.
+if [ -n "${MULTICA_DAEMON_DEVICE_NAME:-}" ]; then
+  daemon_args+=(--device-name "$MULTICA_DAEMON_DEVICE_NAME")
+fi
+
+multica daemon start "${daemon_args[@]}" &
 DAEMON_PID=$!
 
 # Forward termination to the daemon so it can shut down gracefully; tini

@@ -99,6 +99,24 @@ repo root that mirrors the Kubernetes Secret-mount contract using a local
    Add `-v` to also drop the `multica-workspaces` named volume (loses the
    `.repos` cache, worktrees, and asdf installs — the next task cold-clones).
 
+### Name the runtime (`MULTICA_MACHINE_NAME`)
+
+Multica lists this container's runtime as `<Provider> (<machine name>)`, and the
+machine name defaults to the container hostname (`multica-runtime-6cc749d9f7-dr2gh`
+under Kubernetes). Give it a name that describes its scope:
+
+```bash
+# .env (picked up by the compose env_file)
+MULTICA_MACHINE_NAME=fuel-general
+```
+
+The runtime list then shows `Cursor (fuel-general)` (and `Claude (fuel-general)`
+when both harnesses are enabled), and the daemon's device info reads
+`fuel-general · <harness version>`. Unset keeps the hostname default.
+A full custom name without the provider prefix is a one-time server-side rename:
+`multica runtime rename <runtime-id> fuel-general --machine` (survives recreates).
+Details: [Machine name](../README.md#machine-name-multica_machine_name).
+
 ### Scratch shell
 
 Bypass the hard gates (missing secrets/binaries) to poke around:

@@ -91,6 +91,9 @@ JSON
     case "$sub" in
       start)
         ready="${MULTICA_READY_FILE:-/tmp/multica-runtime.ready}"
+        # Record the invocation so the seam can assert flag wiring (e.g.
+        # --device-name from MULTICA_MACHINE_NAME).
+        printf '%s\n' "$*" >"$ready.args"
         : >"$ready"
         # Mimic foreground daemon — stay alive until SIGTERM.
         exec sleep infinity
