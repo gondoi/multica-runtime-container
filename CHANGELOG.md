@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0](https://github.com/gondoi/multica-runtime-container/compare/v0.1.0...v0.2.0) (2026-11-04)
+
+
+### Features
+
+* **harness:** add Claude Code agent CLI harness ([19f5638](https://github.com/gondoi/multica-runtime-container/commit/19f5638a5b6f8b0cbe240f7164a4afdd27ca3c5d))
+* **runtime:** name the runtime at startup via MULTICA_MACHINE_NAME ([c2b75f3](https://github.com/gondoi/multica-runtime-container/commit/c2b75f3c49e3794f965f3e1f7df554fbe674f95a))
+
 ## 0.1.0 (2026-11-04)
 
 
