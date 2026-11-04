@@ -38,6 +38,8 @@ cname_pwd=""
 cname_lvl=""
 cname_claude=""
 cname_machine=""
+cname_nolog=""
+cname_wedged=""
 
 ok() { printf 'PASS  %s\n' "$*"; pass=$((pass + 1)); }
 bad() { printf 'FAIL  %s\n' "$*"; fail=$((fail + 1)); }
@@ -51,6 +53,8 @@ cleanup() {
   [ -n "$cname_machine" ] && docker rm -f "$cname_machine" >/dev/null 2>&1 || true
   [ -n "$cname_aws" ] && docker rm -f "$cname_aws" >/dev/null 2>&1 || true
   [ -n "$cname_claude" ] && docker rm -f "$cname_claude" >/dev/null 2>&1 || true
+  [ -n "$cname_nolog" ] && docker rm -f "$cname_nolog" >/dev/null 2>&1 || true
+  [ -n "$cname_wedged" ] && docker rm -f "$cname_wedged" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -127,6 +131,27 @@ assert_ready_container() {
     bad "$label: entrypoint missing daemon start or still calls inventory sync"
     docker exec "$cname" sed -n '1,140p' /entrypoint.sh >&2 || true
   fi
+}
+
+assert_stays_up() {
+  # assert_stays_up <container> <label> [seconds]
+  #
+  # Regression guard for BOX-94: the entrypoint attached
+  # `multica daemon logs --follow` before the daemon had written
+  # $MULTICA_HOME/daemon.log, got "no log file found …", and exited 1 — a
+  # CrashLoop on a perfectly healthy daemon. The stub models the real 0.8.0
+  # ordering (daemon.log + status=running only after preflight), so a boot that
+  # races the log file dies here instead of in production.
+  local cname="$1" label="$2" secs="${3:-3}" i
+  for i in $(seq 1 "$secs"); do
+    if ! docker inspect -f '{{.State.Running}}' "$cname" 2>/dev/null | grep -q true; then
+      bad "$label: container exited ${i}s after boot (log-stream exit?)"
+      docker logs "$cname" >&2 || true
+      return 0
+    fi
+    sleep 1
+  done
+  ok "$label (still running ${secs}s after 'daemon up; streaming')"
 }
 
 echo "==> Crash fixtures (hard-fail secrets)"
@@ -292,6 +317,16 @@ else
   bad "entrypoint did not report applied log level"
   docker logs "$cname_proj" >&2 || true
 fi
+
+# BOX-94 regression: the log follower must attach only once the daemon owns
+# daemon.log, and its own failure must never take the container down.
+if docker logs "$cname_proj" 2>&1 | grep -q 'no log file found'; then
+  bad "log follower raced the daemon and hit 'no log file found'"
+  docker logs "$cname_proj" >&2 || true
+else
+  ok "log follower waited for daemon.log (no 'no log file found' race)"
+fi
+assert_stays_up "$cname_proj" "happy/projected daemon survives log-stream attach"
 
 echo "==> Happy path — MULTICA_LOG_LEVEL=DEBUG keeps DBG records"
 cname_lvl="multica-boot-seam-lvl-$$"
@@ -524,6 +559,55 @@ if docker exec "$cname_aws" printenv AWS_PROFILE >/dev/null 2>&1; then
 else
   ok "AWS_PROFILE unset (fail closed default)"
 fi
+
+echo "==> Happy path — daemon with no daemon.log (TTY-style stderr) still stays up"
+# A daemon attached to a terminal keeps its records on that terminal and never
+# writes daemon.log (CLI 0.8.0 runDaemonForeground). `daemon logs --follow`
+# cannot work there; boot must degrade with a warning instead of CrashLooping.
+cname_nolog="multica-boot-seam-nolog-$$"
+docker run -d --name "$cname_nolog" \
+  --env-file "$FIX/happy-projected.env" \
+  -e MULTICA_STUB_NO_LOG_FILE=1 \
+  -v "$STUB:/usr/local/bin/multica:ro" \
+  -v "$SECRETS/multica-home:/run/secrets/multica-home:ro" \
+  -v "$SECRETS/cursor:/run/secrets/cursor:ro" \
+  -v "$SECRETS/git:/run/secrets/git:ro" \
+  "$IMAGE" >/dev/null
+assert_ready_container "$cname_nolog" "happy/no-daemon-log Ready"
+if wait_log "$cname_nolog" 'no daemon log at .*daemon.log after 5s' 20; then
+  ok "missing daemon.log degrades to a warning (level filter skipped)"
+else
+  bad "boot did not warn about the missing daemon log"
+  docker logs "$cname_nolog" >&2 || true
+fi
+assert_stays_up "$cname_nolog" "happy/no-daemon-log daemon survives (no log file)"
+
+echo "==> Happy path — daemon alive but never reports running: not Ready, no CrashLoop"
+# `multica daemon status` exits 0 for a stopped daemon, so a probe that reads
+# only its exit code reports Ready forever (that is what made the liveness probe
+# useless). Gate on the reported state: alive process, status "stopped" →
+# ready.sh must fail, and boot must keep supervising instead of exiting.
+cname_wedged="multica-boot-seam-wedged-$$"
+docker run -d --name "$cname_wedged" \
+  --env-file "$FIX/happy-projected.env" \
+  -e MULTICA_STUB_NEVER_RUNNING=1 \
+  -v "$STUB:/usr/local/bin/multica:ro" \
+  -v "$SECRETS/multica-home:/run/secrets/multica-home:ro" \
+  -v "$SECRETS/cursor:/run/secrets/cursor:ro" \
+  -v "$SECRETS/git:/run/secrets/git:ro" \
+  "$IMAGE" >/dev/null
+if wait_log "$cname_wedged" 'has not reported status=running after 10s' 20; then
+  ok "boot does not fake readiness when the daemon never reports running"
+else
+  bad "boot never reported the missing running status"
+  docker logs "$cname_wedged" >&2 || true
+fi
+if docker exec "$cname_wedged" /usr/local/bin/ready.sh >/dev/null 2>&1; then
+  bad "ready.sh reported Ready while daemon status was 'stopped'"
+else
+  ok "ready.sh not Ready while daemon status is 'stopped' (probe is not vacuous)"
+fi
+assert_stays_up "$cname_wedged" "daemon-alive-but-not-running survives (no CrashLoop)"
 
 cleanup
 trap - EXIT

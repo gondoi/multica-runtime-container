@@ -9,6 +9,19 @@
 #   - `config set workspace_id <uuid>` writes that key into config.json.
 #   - `workspace list --output json` returns MULTICA_STUB_WORKSPACES_JSON
 #     (or a tiny built-in two-workspace fixture).
+#
+# Daemon lifecycle mirrors CLI 0.8.0 where the boot contract depends on it:
+#   - `daemon status` ALWAYS exits 0 and reports state in the payload
+#     (runDaemonStatus) — so a boot that only checks the exit code is always
+#     "ready" and waits for nothing.
+#   - `daemon start` takes MULTICA_STUB_STARTUP_DELAY seconds (auth/preflight)
+#     before it owns $MULTICA_HOME/daemon.log and reports status=running.
+#   - `daemon logs` stats the file first and hard-fails when it is missing
+#     (runDaemonLogs), which is the BOX-94 CrashLoop trigger.
+#   - MULTICA_STUB_NO_LOG_FILE=1 models a daemon attached to a TTY: records go
+#     to its own stderr, no daemon.log is ever written.
+#   - MULTICA_STUB_NEVER_RUNNING=1 models a daemon that is alive but never
+#     finishes preflight, so `daemon status` keeps reporting "stopped".
 set -euo pipefail
 
 HOME_DIR="${MULTICA_HOME:-$HOME/.multica}"
@@ -88,41 +101,66 @@ JSON
     ;;
   daemon)
     sub="${2:-}"
+    ready="${MULTICA_READY_FILE:-/tmp/multica-runtime.ready}"
+    log_path="$HOME_DIR/daemon.log"
     case "$sub" in
       start)
-        ready="${MULTICA_READY_FILE:-/tmp/multica-runtime.ready}"
         # Record the invocation so the seam can assert flag wiring (e.g.
         # --device-name from MULTICA_MACHINE_NAME).
         printf '%s\n' "$*" >"$ready.args"
-        : >"$ready"
-        # Mimic foreground daemon — stay alive until SIGTERM.
-        exec sleep infinity
-        ;;
-      status)
-        ready="${MULTICA_READY_FILE:-/tmp/multica-runtime.ready}"
-        if [ -f "$ready" ]; then
-          [ "${3:-}" = "--output" ] && [ "${4:-}" = "json" ] && echo '{"status":"running"}'
-          exit 0
-        fi
-        exit 1
-        ;;
-      logs)
-        # Real CLI tails $MULTICA_HOME/daemon.log. Emit the leveled shapes the
-        # entrypoint's log-level filter classifies, then stay alive so the
-        # container's foreground log follower doesn't exit and take boot with it.
-        follow=0
-        for a in "$@"; do
-          case "$a" in -f|--follow) follow=1 ;; esac
-        done
-        # Emit via an external `cat` (heredoc) so the records are flushed even
-        # though this process stays alive afterwards — bash builtins block-buffer
-        # when stdout is a pipe, which would hide the lines from the follower.
-        cat <<'EOF'
+        # Real daemon order: auth + preflight first, then it owns daemon.log and
+        # only then reports status=running. Anything that attaches the log
+        # follower before this point gets "no log file found" — BOX-94.
+        sleep "${MULTICA_STUB_STARTUP_DELAY:-1}"
+        if [ "${MULTICA_STUB_NO_LOG_FILE:-0}" = 1 ]; then
+          # TTY-style daemon: records stay on its own stderr; no daemon.log.
+          printf '05:00:00.001 INF stub info line on daemon stderr component=daemon\n' >&2
+        else
+          mkdir -p "$(dirname "$log_path")"
+          cat >"$log_path" <<'EOF'
 05:00:00.000 DBG stub debug line component=daemon
 05:00:00.001 INF stub info line component=daemon
 05:00:00.002 WRN stub warn line component=daemon
 05:00:00.003 ERR stub error line component=daemon
 EOF
+        fi
+        if [ "${MULTICA_STUB_NEVER_RUNNING:-0}" = 1 ]; then
+          # Daemon process alive but preflight never completes: status keeps
+          # answering "stopped" (models a wedged/slow daemon).
+          :
+        else
+          : >"$ready"
+        fi
+        # Mimic foreground daemon — stay alive until SIGTERM.
+        exec sleep infinity
+        ;;
+      status)
+        # Real CLI: a report, never an assertion — 0 even when stopped.
+        state="stopped"
+        [ -f "$ready" ] && state="running"
+        if [ "${3:-}" = "--output" ] && [ "${4:-}" = "json" ]; then
+          printf '{"status":"%s"}\n' "$state"
+        else
+          printf 'Daemon: %s\n' "$state"
+        fi
+        exit 0
+        ;;
+      logs)
+        # Real CLI stats the file first and fails hard when it is absent, rather
+        # than waiting for it to appear.
+        if [ ! -f "$log_path" ]; then
+          printf 'no log file found at %s\nThe daemon may not have been started in background mode\n' \
+            "$log_path" >&2
+          exit 1
+        fi
+        follow=0
+        for a in "$@"; do
+          case "$a" in -f|--follow) follow=1 ;; esac
+        done
+        # Emit via an external `cat` so the records are flushed even though this
+        # process stays alive afterwards — bash builtins block-buffer when stdout
+        # is a pipe, which would hide the lines from the follower.
+        cat "$log_path"
         [ "$follow" = 1 ] || exit 0
         while :; do sleep 5; done
         ;;
