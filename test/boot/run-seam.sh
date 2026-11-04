@@ -30,6 +30,7 @@ cname_env=""
 cname_proj=""
 cname_slug=""
 cname_pwd=""
+cname_lvl=""
 
 ok() { printf 'PASS  %s\n' "$*"; pass=$((pass + 1)); }
 bad() { printf 'FAIL  %s\n' "$*"; fail=$((fail + 1)); }
@@ -39,6 +40,7 @@ cleanup() {
   [ -n "$cname_proj" ] && docker rm -f "$cname_proj" >/dev/null 2>&1 || true
   [ -n "$cname_slug" ] && docker rm -f "$cname_slug" >/dev/null 2>&1 || true
   [ -n "$cname_pwd" ] && docker rm -f "$cname_pwd" >/dev/null 2>&1 || true
+  [ -n "$cname_lvl" ] && docker rm -f "$cname_lvl" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -48,7 +50,8 @@ docker build -t "$IMAGE" .
 chmod +x "$STUB" "$ROOT/entrypoint.sh" \
   "$ROOT/bin/configure-git-auth.sh" "$ROOT/bin/materialize-secrets.sh" \
   "$ROOT/bin/mint-github-app-token.sh" "$ROOT/bin/github-app-credential-helper.sh" \
-  "$ROOT/bin/gh-wrapper.sh" "$ROOT/bin/ready.sh"
+  "$ROOT/bin/gh-wrapper.sh" "$ROOT/bin/log-level-filter.sh" \
+  "$ROOT/bin/ready.sh"
 
 run_crash() {
   local name="$1" envfile="$2"
@@ -101,6 +104,7 @@ echo "==> Crash fixtures (hard-fail secrets)"
 run_crash no-multica "$FIX/crash-no-multica.env"
 run_crash no-cursor "$FIX/crash-no-cursor.env"
 run_crash no-git "$FIX/crash-no-git.env"
+run_crash bad-log-level "$FIX/crash-bad-log-level.env"
 run_crash github-password-public "$FIX/crash-github-password-public.env"
 
 echo "==> Happy path — env-file secrets (stub multica → Ready)"
@@ -215,6 +219,55 @@ if [ "$slug_ws" = "00000000-0000-0000-0000-000000000001" ] \
 else
   bad "MULTICA_WORKSPACE slug pin failed: live='$slug_ws'"
   docker logs "$cname_slug" >&2 || true
+fi
+
+# Container stdout daemon-log level: default INFO must drop DBG records and keep
+# INF/WRN/ERR (collection-side filter — daemon.log itself stays DEBUG).
+lvl_logs=""
+for _ in 1 2 3 4 5; do
+  lvl_logs="$(docker logs "$cname_proj" 2>&1 || true)"
+  grep -q 'INF stub info line' <<<"$lvl_logs" && break
+  sleep 1
+done
+if grep -q 'INF stub info line' <<<"$lvl_logs" \
+  && grep -q 'WRN stub warn line' <<<"$lvl_logs" \
+  && grep -q 'ERR stub error line' <<<"$lvl_logs" \
+  && ! grep -q 'DBG stub debug line' <<<"$lvl_logs"; then
+  ok "default MULTICA_LOG_LEVEL=INFO (DBG filtered, INF/WRN/ERR kept)"
+else
+  bad "default log level did not filter DBG from container stdout"
+  printf '%s\n' "$lvl_logs" >&2 || true
+fi
+
+if docker logs "$cname_proj" 2>&1 | grep -q 'daemon log stream level: INFO'; then
+  ok "entrypoint reports applied log level"
+else
+  bad "entrypoint did not report applied log level"
+  docker logs "$cname_proj" >&2 || true
+fi
+
+echo "==> Happy path — MULTICA_LOG_LEVEL=DEBUG keeps DBG records"
+cname_lvl="multica-boot-seam-lvl-$$"
+docker run -d --name "$cname_lvl" \
+  --env-file "$FIX/happy-projected.env" \
+  -e MULTICA_LOG_LEVEL=DEBUG \
+  -v "$STUB:/usr/local/bin/multica:ro" \
+  -v "$SECRETS/multica-home:/run/secrets/multica-home:ro" \
+  -v "$SECRETS/cursor:/run/secrets/cursor:ro" \
+  -v "$SECRETS/git:/run/secrets/git:ro" \
+  "$IMAGE" >/dev/null
+assert_ready_container "$cname_lvl" "happy/log-level DEBUG Ready"
+dbg_logs=""
+for _ in 1 2 3 4 5; do
+  dbg_logs="$(docker logs "$cname_lvl" 2>&1 || true)"
+  grep -q 'DBG stub debug line' <<<"$dbg_logs" && break
+  sleep 1
+done
+if grep -q 'DBG stub debug line' <<<"$dbg_logs"; then
+  ok "MULTICA_LOG_LEVEL=DEBUG passes DBG through the filter"
+else
+  bad "MULTICA_LOG_LEVEL=DEBUG did not surface DBG records"
+  printf '%s\n' "$dbg_logs" >&2 || true
 fi
 
 echo "==> Happy path — GitHub Enterprise Server password tier (lowest priority)"

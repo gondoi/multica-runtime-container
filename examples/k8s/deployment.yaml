@@ -51,6 +51,11 @@ spec:
               value: /home/agent/workspaces
             - name: MULTICA_AGENT_RUNTIME_NAME
               value: multica-runtime
+            # Daemon log level mirrored to container stdout: DEBUG|INFO|WARN|ERROR
+            # (default INFO). Collection-side filter — the daemon's own
+            # ~/.multica/daemon.log always records DEBUG.
+            - name: MULTICA_LOG_LEVEL
+              value: INFO
             # Optional: pin default workspace after login (slug, name, or UUID).
             # Falls back to projected Secret config.json .workspace_id when unset.
             # Prefer consumer overlay for tenant-specific values.

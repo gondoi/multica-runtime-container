@@ -4,6 +4,7 @@
 #   2. Materialize Secret-projected Multica home + Cursor/git tokens
 #   3. Hard-fail gates (required binaries + Multica/Cursor/git-auth secrets)
 #   4. Configure git HTTPS credential helper
+#   4b. Validate MULTICA_LOG_LEVEL + export it (log-stream filter, see below)
 #   5. login → pin workspace (env/Secret) → exec multica daemon start --foreground
 #
 # Ready = daemon is up after gates. There is NO boot-time inventory sync —
@@ -43,6 +44,20 @@ source /usr/local/bin/materialize-secrets.sh
 
 export MULTICA_DAEMON_ID="${MULTICA_DAEMON_ID:-$MULTICA_AGENT_RUNTIME_NAME}"
 
+# ── 2b. Daemon log level (collection-side) ────────────────────────────────
+# `multica daemon start` has no --log-level flag and there is no log-level
+# env/config key (CLI 0.8.0); its handler level is fixed at debug and writes
+# DBG records to $MULTICA_HOME/daemon.log unconditionally. So MULTICA_LOG_LEVEL
+# does not change what the daemon emits — it filters the daemon log stream we
+# mirror to container stdout (docker logs / kubectl logs). DEBUG = show all.
+# Upstream ask: a real --log-level/env on `multica daemon start`.
+MULTICA_LOG_LEVEL="$(printf '%s' "${MULTICA_LOG_LEVEL:-INFO}" | tr '[:lower:]' '[:upper:]')"
+case "$MULTICA_LOG_LEVEL" in
+  DEBUG|INFO|WARN|ERROR) ;;
+  *) die "MULTICA_LOG_LEVEL must be DEBUG|INFO|WARN|ERROR (got '${MULTICA_LOG_LEVEL}')" ;;
+esac
+log "daemon log stream level: $MULTICA_LOG_LEVEL (filter on container stdout; daemon.log stays DEBUG)"
+
 # ── 3. Hard gates: binaries ───────────────────────────────────────────────
 require_bin() {
   command -v "$1" >/dev/null 2>&1 || die "required binary not on PATH: $1"
@@ -55,6 +70,8 @@ require_bin git
 require_bin jq
 require_bin curl
 require_bin asdf
+require_bin awk
+require_bin grep
 
 # ── 3b. Hard gates: secrets (daemon Ready contract) ───────────────────────
 [ -n "${MULTICA_TOKEN:-}" ] || die "Multica auth required: set MULTICA_TOKEN or project config.json under ${MULTICA_HOME_SECRET_DIR:-/run/secrets/multica-home}"
@@ -224,8 +241,8 @@ for _ in $(seq 1 50); do
   sleep 0.2
 done
 
-log "daemon up; streaming daemon logs to container stdout"
-multica daemon logs --follow &
+log "daemon up; streaming daemon logs to container stdout (level=$MULTICA_LOG_LEVEL)"
+multica daemon logs --follow 2>&1 | /usr/local/bin/log-level-filter.sh "$MULTICA_LOG_LEVEL" &
 LOGS_PID=$!
 
 # Exit (CrashLoop in K8s if unexpected) the moment either the daemon or the

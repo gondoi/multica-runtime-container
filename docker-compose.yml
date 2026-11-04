@@ -33,6 +33,8 @@ services:
     environment:
       MULTICA_WORKSPACES_ROOT: /home/agent/workspaces
       MULTICA_AGENT_RUNTIME_NAME: ${MULTICA_AGENT_RUNTIME_NAME:-multica-runtime}
+      # Container-stdout daemon log level: DEBUG|INFO|WARN|ERROR (default INFO).
+      MULTICA_LOG_LEVEL: ${MULTICA_LOG_LEVEL:-INFO}
       # Secret dirs match K8s projected mounts (see examples/k8s/).
       MULTICA_HOME_SECRET_DIR: /run/secrets/multica-home
       CURSOR_API_KEY_FILE: /run/secrets/cursor/CURSOR_API_KEY
