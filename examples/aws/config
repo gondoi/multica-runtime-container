@@ -1,0 +1,12 @@
+# Generic AWS CLI profile stub for Multica runtime home-base.
+# Replace via consumer ConfigMap / bind-mount — do not bake private account
+# allowlists into the published image.
+#
+# Each profile uses credential_process → image-pinned /usr/local/bin/aws-sso
+# (guard wrapper → /usr/local/libexec/aws-sso). AWS_PROFILE stays unset;
+# callers pass --profile explicitly.
+#
+# Example (uncomment + edit ARNs for your Identity Center roles):
+#
+# [profile ExampleAccount:ReadOnlyAccess]
+# credential_process = /usr/local/bin/aws-sso -S "Default" process --arn arn:aws:iam::123456789012:role/ReadOnlyAccess

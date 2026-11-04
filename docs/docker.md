@@ -109,8 +109,19 @@ docker compose logs runtime | grep 'aws auth:'
 That boot line names the source the chain resolved (`static env keys`,
 `web identity / IRSA`, `container credentials endpoint`, `mounted AWS config`,
 or `none detected …`). It is informational only — it never fails a boot and
-never prints a credential value. `aws-sso` / `aws configure sso` stays deferred:
-the device-authorization flow needs an interactive browser step.
+never prints a credential value.
+
+For Identity Center profiles without IRSA, compose mounts
+`examples/aws/{config,config.yaml}` at `/run/config/aws*` (override with a
+private allowlist). After healthy:
+
+```bash
+docker compose exec -e AWS_SSO_OPERATOR_LOGIN=1 runtime \
+  aws-sso login --url-action=print
+```
+
+Agents must not run `aws-sso login` (guard exits non-zero without
+`AWS_SSO_OPERATOR_LOGIN=1`). SSO cache persists on the workspaces volume.
 
 ### Boot seam tests
 

@@ -1,16 +1,19 @@
 # Kubernetes mount parity (examples)
 
-Illustrative manifests for the Secret projection contract. Namespace is
-**deploy-time** — replace `multica-runtime` with your namespace. No Ingress.
+Illustrative manifests for the Secret + ConfigMap projection contract.
+Namespace is **deploy-time** — replace `multica-runtime` with your namespace.
+No Ingress.
 
 | Mount | Path in pod | Role |
 | --- | --- | --- |
 | Secret `multica-runtime-home` | `/run/secrets/multica-home/{config.json,daemon.id}` | Multica identity (no Multica-home PVC) |
 | Secret `multica-runtime-cursor` | `/run/secrets/cursor/CURSOR_API_KEY` | Cursor agent |
 | Secret `multica-runtime-git` | `/run/secrets/git/GITHUB_TOKEN` **or** `GITHUB_APP_*` | git HTTPS for lazy `repo checkout` (PAT or App) |
-| PVC `multica-runtime-workspaces` | `/home/agent/workspaces` | `.repos`, worktrees, asdf, provider homes |
+| ConfigMap `multica-runtime-aws` | `/run/config/aws/config` | Literal `~/.aws/config` fragment (generic stub in examples) |
+| ConfigMap `multica-runtime-aws-sso` | `/run/config/aws-sso/config.yaml` | `aws-sso` config (StartUrl, UrlAction=print) |
+| PVC `multica-runtime-workspaces` | `/home/agent/workspaces` | `.repos`, worktrees, asdf, **AWS SSO cache** under `.provider-homes/` |
 | ServiceAccount `multica-runtime` | pod identity (not a mount) | IRSA hook for AWS creds (annotation optional) |
-| Secret `multica-runtime-aws` *(optional, commented)* | `/run/secrets/aws/{config,credentials}` | AWS tier 3 fallback only |
+| Secret `multica-runtime-aws-static` *(optional, commented)* | `/run/secrets/aws/{config,credentials}` | AWS tier 3 static-key fallback only |
 
 Apply order (example only — production uses GitOps + SOPS):
 
@@ -18,6 +21,7 @@ Apply order (example only — production uses GitOps + SOPS):
 kubectl apply -f namespace.yaml
 kubectl apply -f serviceaccount.yaml     # plain SA; annotation optional (IRSA)
 kubectl apply -f secret.example.yaml     # replace placeholder values first
+kubectl apply -f aws-configmap.yaml      # replace stubs with consumer allowlist
 kubectl apply -f pvc.yaml
 kubectl apply -f deployment.yaml
 ```
@@ -28,15 +32,16 @@ pod mount). See comments in `deployment.yaml` / `secret.example.yaml`.
 
 ## AWS credentials
 
-The image ships `aws` (AWS CLI v2) but **no** credentials and no auth-tier
-plumbing of its own — the AWS SDK's default chain resolves them. Precedence,
-highest trust first (full table in the [root README](../../README.md#aws-auth-tiers)):
+The image ships `aws` (AWS CLI v2) + upstream `aws-sso` but **no** baked
+credentials. Prefer the SDK default chain first (full table in the
+[root README](../../README.md#aws-auth-tiers)):
 
 | Tier | What to wire | Manifests touched | Static keys? |
 | --- | --- | --- | --- |
 | 1 · IRSA (EKS) | IAM role trusting the cluster OIDC provider, annotated onto the ServiceAccount | `serviceaccount.yaml` (uncomment `eks.amazonaws.com/role-arn`) | No |
 | 2 · Instance / ECS task role | Node IAM role or ECS task role — nothing in these manifests | none | No |
-| 3 · Mounted config | `multica-runtime-aws` Secret + `AWS_CONFIG_FILE` / `AWS_SHARED_CREDENTIALS_FILE` | `secret.example.yaml` + `deployment.yaml` (uncomment) | Yes — least preferred |
+| 3a · aws-sso ConfigMaps | Curated `~/.aws/config` + `aws-sso` YAML; SSO cache on PVC | `aws-configmap.yaml` + Deployment mounts | No (SSO tokens on PVC) |
+| 3b · Mounted static config | Secret + `AWS_CONFIG_FILE` / `AWS_SHARED_CREDENTIALS_FILE` | `secret.example.yaml` + `deployment.yaml` (uncomment) | Yes — least preferred |
 
 Boot logs the tier it resolves, e.g.:
 
@@ -52,5 +57,16 @@ credential value. Verify from inside a pod with:
 kubectl -n multica-runtime exec deploy/multica-runtime -- aws sts get-caller-identity
 ```
 
-`aws-sso` / `aws configure sso` is still deferred: the device-authorization
-flow needs an interactive browser step that doesn't fit a headless pod.
+## AWS SSO login (operator-exec only)
+
+When using ConfigMap profiles (tier 3a) without IRSA, agents do **not** run
+`aws-sso login`. After the pod is Ready:
+
+```bash
+kubectl exec -it deploy/multica-runtime -n multica-runtime -- \
+  env AWS_SSO_OPERATOR_LOGIN=1 aws-sso login --url-action=print
+```
+
+Open the printed URL. Cache persists on the workspaces PVC. Without
+`AWS_SSO_OPERATOR_LOGIN=1`, `aws-sso login` exits non-zero. `AWS_PROFILE` is
+unset — pass `--profile` / `AWS_PROFILE` per call.

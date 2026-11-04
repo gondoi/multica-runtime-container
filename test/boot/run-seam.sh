@@ -9,6 +9,7 @@
 #   - env-file secrets (override path)
 #   - Secret-projected Multica home + Cursor/git file mounts (K8s parity)
 #   - login workspace_id clobber → re-pin from Secret / MULTICA_WORKSPACE slug
+#   - AWS ConfigMap mounts → PVC provider homes; operator-only login guard
 #
 # Usage (from repo root):
 #   ./test/boot/run-seam.sh
@@ -20,6 +21,7 @@ IMAGE="${IMAGE:-multica-runtime:local}"
 FIX="$ROOT/test/boot/fixtures"
 STUB="$ROOT/test/boot/stubs/multica"
 SECRETS="$FIX/secrets"
+AWS_EX="$ROOT/examples/aws"
 TIMEOUT_READY="${TIMEOUT_READY:-30}"
 
 cd "$ROOT"
@@ -29,6 +31,7 @@ fail=0
 cname_env=""
 cname_proj=""
 cname_slug=""
+cname_aws=""
 cname_pwd=""
 cname_lvl=""
 
@@ -41,6 +44,7 @@ cleanup() {
   [ -n "$cname_slug" ] && docker rm -f "$cname_slug" >/dev/null 2>&1 || true
   [ -n "$cname_pwd" ] && docker rm -f "$cname_pwd" >/dev/null 2>&1 || true
   [ -n "$cname_lvl" ] && docker rm -f "$cname_lvl" >/dev/null 2>&1 || true
+  [ -n "$cname_aws" ] && docker rm -f "$cname_aws" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -49,8 +53,10 @@ docker build -t "$IMAGE" .
 
 chmod +x "$STUB" "$ROOT/entrypoint.sh" \
   "$ROOT/bin/configure-git-auth.sh" "$ROOT/bin/materialize-secrets.sh" \
+  "$ROOT/bin/materialize-aws.sh" "$ROOT/bin/aws-sso-guard.sh" \
   "$ROOT/bin/mint-github-app-token.sh" "$ROOT/bin/github-app-credential-helper.sh" \
   "$ROOT/bin/gh-wrapper.sh" "$ROOT/bin/log-level-filter.sh" \
+  "$ROOT/bin/aws-credential-source.sh" \
   "$ROOT/bin/ready.sh"
 
 wait_log() {
@@ -320,6 +326,88 @@ if wait_log "$cname_pwd" 'GitHub password auth configured'; then
   ok "password tier: boot logs the chosen tier"
 else
   bad "password tier: boot did not log the chosen tier"
+fi
+
+
+# Without AWS mounts, daemon still Ready (continue-on-degrade).
+if docker logs "$cname_proj" 2>&1 | grep -q 'AWS profiles: no ConfigMap mounts'; then
+  ok "AWS absent → continue degraded (projected happy path)"
+else
+  bad "expected degrade log when AWS ConfigMaps are not mounted"
+  docker logs "$cname_proj" >&2 || true
+fi
+
+echo "==> Happy path — AWS ConfigMap mounts + SSO cache on workspaces + login guard"
+cname_aws="multica-boot-seam-aws-$$"
+docker run -d --name "$cname_aws" \
+  --env-file "$FIX/happy-projected.env" \
+  -v "$STUB:/usr/local/bin/multica:ro" \
+  -v "$SECRETS/multica-home:/run/secrets/multica-home:ro" \
+  -v "$SECRETS/cursor:/run/secrets/cursor:ro" \
+  -v "$SECRETS/git:/run/secrets/git:ro" \
+  -v "$AWS_EX/config:/run/config/aws/config:ro" \
+  -v "$AWS_EX/config.yaml:/run/config/aws-sso/config.yaml:ro" \
+  "$IMAGE" >/dev/null
+
+assert_ready_container "$cname_aws" "happy/aws Ready"
+
+if docker exec "$cname_aws" test -L /home/agent/.aws \
+  && docker exec "$cname_aws" test -L /home/agent/.config/aws-sso \
+  && docker exec "$cname_aws" readlink /home/agent/.aws | grep -q '/workspaces/.provider-homes/aws$' \
+  && docker exec "$cname_aws" readlink /home/agent/.config/aws-sso | grep -q '/workspaces/.provider-homes/aws-sso$'; then
+  ok "AWS homes symlinked onto workspaces PVC provider-homes"
+else
+  bad "AWS provider-home symlinks missing or not on workspaces PVC"
+  docker exec "$cname_aws" ls -la /home/agent/.aws /home/agent/.config/aws-sso >&2 || true
+fi
+
+if docker exec "$cname_aws" test -L /home/agent/workspaces/.provider-homes/aws/config \
+  && docker exec "$cname_aws" test -L /home/agent/workspaces/.provider-homes/aws-sso/config.yaml \
+  && docker exec "$cname_aws" grep -q 'my-org.awsapps.com' /home/agent/workspaces/.provider-homes/aws-sso/config.yaml; then
+  ok "AWS ConfigMap files linked into PVC-backed provider homes"
+else
+  bad "AWS ConfigMap → PVC link failed"
+  docker exec "$cname_aws" ls -la /home/agent/workspaces/.provider-homes/aws /home/agent/workspaces/.provider-homes/aws-sso >&2 || true
+fi
+
+ver_out="$(docker exec "$cname_aws" /usr/local/bin/aws-sso version 2>&1 || true)"
+if docker exec "$cname_aws" test -x /usr/local/bin/aws-sso \
+  && docker exec "$cname_aws" test -x /usr/local/libexec/aws-sso \
+  && printf '%s' "$ver_out" | grep -q 'AWS SSO CLI'; then
+  ok "aws-sso guard + real binary on PATH"
+else
+  bad "aws-sso binary/guard missing"
+  printf '%s\n' "$ver_out" >&2
+  docker exec "$cname_aws" ls -la /usr/local/bin/aws-sso /usr/local/libexec/aws-sso >&2 || true
+fi
+
+set +e
+docker exec "$cname_aws" aws-sso login --url-action=print >/tmp/multica-boot-aws-login.out 2>&1
+login_rc=$?
+set -e
+if [ "$login_rc" -ne 0 ] && grep -q 'operator-exec only' /tmp/multica-boot-aws-login.out; then
+  ok "aws-sso login blocked without AWS_SSO_OPERATOR_LOGIN=1"
+else
+  bad "aws-sso login guard failed (rc=$login_rc)"
+  sed -n '1,40p' /tmp/multica-boot-aws-login.out >&2 || true
+fi
+
+set +e
+docker exec -e AWS_SSO_OPERATOR_LOGIN=1 "$cname_aws" \
+  aws-sso login --url-action=print >/tmp/multica-boot-aws-login-op.out 2>&1
+op_rc=$?
+set -e
+if ! grep -q 'operator-exec only' /tmp/multica-boot-aws-login-op.out; then
+  ok "AWS_SSO_OPERATOR_LOGIN=1 bypasses login guard (rc=$op_rc)"
+else
+  bad "operator login still blocked by guard"
+  sed -n '1,40p' /tmp/multica-boot-aws-login-op.out >&2 || true
+fi
+
+if docker exec "$cname_aws" printenv AWS_PROFILE >/dev/null 2>&1; then
+  bad "AWS_PROFILE unexpectedly set in container env"
+else
+  ok "AWS_PROFILE unset (fail closed default)"
 fi
 
 cleanup

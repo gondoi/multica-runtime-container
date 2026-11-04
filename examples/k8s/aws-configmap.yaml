@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: multica-runtime-aws
+  namespace: multica-runtime
+  labels:
+    app.kubernetes.io/name: multica-runtime
+data:
+  # Literal ~/.aws/config fragment. Consumer overlays replace this key with a
+  # curated allowlist. Keep credential_process pointed at /usr/local/bin/aws-sso.
+  config: |
+    # Generic stub — replace via consumer overlay.
+    # [profile ExampleAccount:ReadOnlyAccess]
+    # credential_process = /usr/local/bin/aws-sso -S "Default" process --arn arn:aws:iam::123456789012:role/ReadOnlyAccess
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: multica-runtime-aws-sso
+  namespace: multica-runtime
+  labels:
+    app.kubernetes.io/name: multica-runtime
+data:
+  config.yaml: |
+    SSOConfig:
+        Default:
+            SSORegion: us-east-1
+            StartUrl: https://my-org.awsapps.com/start
+    ConsoleDuration: 720
+    CacheRefresh: 168
+    UrlAction: print
+    LogLevel: error
+    HistoryLimit: 10
+    HistoryMinutes: 1440
+    ProfileFormat: "{{ FirstItem .AccountName (.AccountAlias | nospace) }}:{{ .RoleName }}"
+    FullTextSearch: true
