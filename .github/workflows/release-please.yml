@@ -1,0 +1,89 @@
+# Release Please: conventional commits -> release PR -> `vX.Y.Z` tag + GitHub release.
+#
+# Merge of the release PR is what publishes a version: release-please writes the
+# CHANGELOG entry, bumps version.txt, tags `vX.Y.Z` and creates the GitHub
+# release. The image publish is then dispatched at that tag (see the note below
+# for why it cannot simply wait for the tag push).
+name: Release please
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-please-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          # Optional: set a `RELEASE_PLEASE_TOKEN` secret (PAT or GitHub App
+          # token) if you also want CI to run on the release PR itself — events
+          # created with the default GITHUB_TOKEN never start workflows.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - name: Summarize
+        if: always()
+        env:
+          RELEASE_CREATED: ${{ steps.release.outputs.release_created }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+          PAT_CONFIGURED: ${{ secrets.RELEASE_PLEASE_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          {
+            if [ "$RELEASE_CREATED" = "true" ]; then
+              echo "### Released \`$TAG\`"
+            else
+              echo "### No release this run"
+              echo ""
+              echo "A release PR was opened or updated; merging it creates the tag."
+            fi
+            echo ""
+            echo "- Token: $([ "$PAT_CONFIGURED" = "true" ] && echo 'dedicated (RELEASE_PLEASE_TOKEN)' || echo 'default GITHUB_TOKEN')"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Tag pushes made with GITHUB_TOKEN do not start other workflows — GitHub
+  # suppresses recursive runs — so `docker-publish.yml`'s `push: tags` trigger
+  # does not fire for a release-please tag. Dispatch the publish explicitly.
+  # With `RELEASE_PLEASE_TOKEN` configured the tag push already triggers it, so
+  # this job stands aside instead of publishing the same tag twice.
+  publish-image:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Dispatch docker-publish.yml on the new tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+          PAT_CONFIGURED: ${{ secrets.RELEASE_PLEASE_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          if [ "$PAT_CONFIGURED" = "true" ]; then
+            echo "tag push from RELEASE_PLEASE_TOKEN already triggers docker-publish.yml"
+            exit 0
+          fi
+          if [ -z "$TAG" ]; then
+            echo "::error::release created without a tag_name output"
+            exit 1
+          fi
+          gh workflow run docker-publish.yml --ref "$TAG" --repo "$GITHUB_REPOSITORY"
+          echo "dispatched docker-publish.yml on $TAG"
