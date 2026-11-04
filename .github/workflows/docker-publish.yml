@@ -1,24 +1,19 @@
 # Multi-arch publish to ghcr.io/gondoi/multica-runtime.
-# Contract: workflow_dispatch + pin-file main + v* tags; semver + sha-<12>; no latest.
+# Contract: semver only — publish runs from a `vX.Y.Z` release tag (created by
+# Release Please when the release PR merges) or a manual dispatch on such a tag.
+# Tags pushed: `vX.Y.Z` + `X.Y.Z`. No commit-SHA tags, no `latest`.
 name: Build and publish
 
 on:
-  workflow_dispatch:
   push:
-    branches:
-      - main
     tags:
       - "v*"
-    paths:
-      - Dockerfile
-      - entrypoint.sh
-      - bin/**
-      - .dockerignore
-      - .github/workflows/docker-publish.yml
+  workflow_dispatch:
 
 concurrency:
+  # One publish per release tag; never cancel a release mid-push, queue instead.
   group: docker-publish-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -29,13 +24,24 @@ jobs:
   prepare:
     runs-on: ubuntu-latest
     outputs:
-      sha_tag: ${{ steps.meta.outputs.sha_tag }}
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
     steps:
       - id: meta
         shell: bash
         run: |
           set -euo pipefail
-          echo "sha_tag=sha-${GITHUB_SHA:0:12}" >> "$GITHUB_OUTPUT"
+          # No tag, no publish: images are addressed by release version, not SHA.
+          if [ "${GITHUB_REF_TYPE:?}" != "tag" ]; then
+            echo "::error::publish runs only from a semver release tag (vX.Y.Z); got ${GITHUB_REF_TYPE}:${GITHUB_REF_NAME}"
+            exit 1
+          fi
+          if ! printf '%s' "$GITHUB_REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::tag ${GITHUB_REF_NAME} is not semver (vX.Y.Z)"
+            exit 1
+          fi
+          echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
   docker:
     needs: prepare
@@ -60,11 +66,11 @@ jobs:
       labels: |
         org.opencontainers.image.source=https://github.com/${{ github.repository }}
         org.opencontainers.image.description=Multica runtime home-base (thin agent daemon image)
+        org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+        org.opencontainers.image.revision=${{ github.sha }}
       tags: |
-        type=ref,event=tag
         type=semver,pattern={{raw}}
         type=semver,pattern={{version}}
-        type=raw,value=${{ needs.prepare.outputs.sha_tag }}
     secrets:
       REGISTRY_USERNAME: ${{ github.repository_owner }}
       REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
@@ -105,10 +111,12 @@ jobs:
 
       - name: Pull published tag and assert baseline binaries
         env:
-          IMAGE: ghcr.io/gondoi/multica-runtime:${{ needs.prepare.outputs.sha_tag }}
+          IMAGE: ghcr.io/gondoi/multica-runtime:${{ needs.prepare.outputs.tag }}
+          VERSION_IMAGE: ghcr.io/gondoi/multica-runtime:${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
           docker pull "$IMAGE"
+          docker pull "$VERSION_IMAGE"
           docker run --rm --entrypoint /bin/bash "$IMAGE" -lc \
             'command -v multica cursor-agent asdf git ssh jq curl tini aws && aws --version'
-          echo "smoke ok: $IMAGE"
+          echo "smoke ok: $IMAGE + $VERSION_IMAGE"

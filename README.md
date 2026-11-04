@@ -8,20 +8,53 @@ Published image: `ghcr.io/gondoi/multica-runtime` (public GHCR, anonymous pull).
 
 **Usage docs:** [Running locally with Docker](docs/docker.md) (incl. a working Compose setup) · [Running in Kubernetes](docs/kubernetes.md)
 
+### Releases
+
+Versions are cut by [Release Please](https://github.com/googleapis/release-please) from
+[Conventional Commits](https://www.conventionalcommits.org/) on `main` — no manual tagging.
+
+1. `.github/workflows/release-please.yml` keeps a **release PR** open on `main` with the next
+   version, a `CHANGELOG.md` entry per commit, and a `version.txt` bump.
+2. Merging that PR creates the GitHub release and the **`vX.Y.Z` tag**.
+3. `.github/workflows/docker-publish.yml` publishes the images for that tag.
+
+Config lives in-repo: `release-please-config.json` (release type `simple`, tag `v<version>`) and
+`.release-please-manifest.json` (last released version). The manifest is bootstrapped at
+**`0.0.0`** — nothing has been released yet — and `initial-version: 0.1.0` pins the first release to
+**`v0.1.0`** (the `simple` type would otherwise default a never-released package to `1.0.0`), with the
+changelog accumulated from the repo history. After that the manifest is the source of truth. While
+below `1.0.0`: `fix` → patch, `feat` → minor, `BREAKING CHANGE` → minor (`bump-minor-pre-major`) —
+no surprise `1.0.0` until you ask for it.
+
+`.github/workflows/conventional-commits.yml` gates every PR on commit subjects
+(`<type>(<scope>): <summary>`) via `test/ci/check-conventional-commits.sh`; a subject that
+Release Please cannot parse would silently vanish from the changelog. Merge commits, `Revert "..."`,
+and squash-merge of a conventional PR title are fine — keep commit subjects conventional, even
+though the PR title carries the tracker key (e.g. `BOX-89: …`).
+
+One-time repo setting: **Settings → Actions → General → Workflow permissions → “Allow GitHub
+Actions to create and approve pull requests”** must be on, otherwise Release Please cannot open the
+release PR. Optionally set a `RELEASE_PLEASE_TOKEN` secret (PAT or GitHub App token) if CI should
+run on the release PR itself; without it, `release-please.yml` dispatches the image publish
+directly, because tags created with `GITHUB_TOKEN` never trigger other workflows.
+
 ### CI publish
 
 GitHub Actions (`.github/workflows/docker-publish.yml`) builds **linux/amd64 + linux/arm64** via `FuelLabs/github-actions` `docker-build-push` and pushes pin-friendly tags only (no `latest`):
 
 | Trigger | When |
 | --- | --- |
-| `workflow_dispatch` | Manual |
-| Push to `main` | Dockerfile / entrypoint / `bin/**` / `.dockerignore` / this workflow |
-| Git tag `v*` | Semver releases |
+| Git tag `vX.Y.Z` | Release tagged by Release Please (or pushed by hand for the same shape) |
+| `workflow_dispatch` | Manual re-publish — select an existing `vX.Y.Z` tag as the ref |
+
+Anything that is not a semver tag fails the `prepare` job; there are no per-commit image tags.
 
 | Tag shape | Example |
 | --- | --- |
-| Semver (on `v*` tags) | `v0.1.0`, `0.1.0` |
-| Short SHA | `sha-<12>` |
+| Release version | `v0.1.0` |
+| Release version (no `v`) | `0.1.0` |
+
+Deployments (Compose, Kubernetes) should pin a release tag such as `v0.1.0`.
 
 ## What's in the image
 
@@ -57,7 +90,7 @@ Order:
 
 There is **no** ConfigMap inventory sync at boot. Repo trees land on the workspaces volume when Multica runs `repo checkout` for a task. The **first task may cold-clone**; that is expected and is not a Ready gate.
 
-Scratch shell (bypasses gates): `docker run --rm -it --entrypoint /bin/bash ghcr.io/gondoi/multica-runtime:sha-…`
+Scratch shell (bypasses gates): `docker run --rm -it --entrypoint /bin/bash ghcr.io/gondoi/multica-runtime:v0.1.0`
 
 ## Secrets (compose + Kubernetes parity)
 
