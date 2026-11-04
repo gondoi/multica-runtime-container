@@ -111,11 +111,13 @@ assert_ready_container() {
     return 0
   fi
 
-  if docker exec "$cname" grep -Eq 'exec multica daemon start' /entrypoint.sh \
+  # Daemon is started as a child (log streamer is foreground); require the
+  # start invocation and no inventory sync — do not require a literal `exec`.
+  if docker exec "$cname" grep -Eq 'multica daemon start' /entrypoint.sh \
     && ! docker exec "$cname" grep -Eq '(^|[[:space:]])(/usr/local/bin/)?(sync-inventory|inventory-sync)($|[[:space:]])' /entrypoint.sh; then
-    ok "$label (ready.sh + exec daemon foreground, no inventory sync)"
+    ok "$label (ready.sh + daemon foreground, no inventory sync)"
   else
-    bad "$label: entrypoint missing exec daemon start or still calls inventory sync"
+    bad "$label: entrypoint missing daemon start or still calls inventory sync"
     docker exec "$cname" sed -n '1,140p' /entrypoint.sh >&2 || true
   fi
 }
