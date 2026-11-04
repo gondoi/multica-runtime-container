@@ -20,9 +20,11 @@ Versions are cut by [Release Please](https://github.com/googleapis/release-pleas
 
 Config lives in-repo: `release-please-config.json` (release type `simple`, tag `v<version>`) and
 `.release-please-manifest.json` (last released version). The manifest is bootstrapped at
-**`0.0.0`** — nothing has been released yet — so the first release PR proposes **`v0.1.0`** with the
-changelog accumulated from the repo history. While below `1.0.0`: `fix` → patch, `feat` → minor,
-`BREAKING CHANGE` → minor (no `1.0.0` until you ask for it).
+**`0.0.0`** — nothing has been released yet — and `initial-version: 0.1.0` pins the first release to
+**`v0.1.0`** (the `simple` type would otherwise default a never-released package to `1.0.0`), with the
+changelog accumulated from the repo history. After that the manifest is the source of truth. While
+below `1.0.0`: `fix` → patch, `feat` → minor, `BREAKING CHANGE` → minor (`bump-minor-pre-major`) —
+no surprise `1.0.0` until you ask for it.
 
 `.github/workflows/conventional-commits.yml` gates every PR on commit subjects
 (`<type>(<scope>): <summary>`) via `test/ci/check-conventional-commits.sh`; a subject that
