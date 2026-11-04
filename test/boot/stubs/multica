@@ -103,6 +103,26 @@ JSON
         fi
         exit 1
         ;;
+      logs)
+        # Real CLI tails $MULTICA_HOME/daemon.log. Emit the leveled shapes the
+        # entrypoint's log-level filter classifies, then stay alive so the
+        # container's foreground log follower doesn't exit and take boot with it.
+        follow=0
+        for a in "$@"; do
+          case "$a" in -f|--follow) follow=1 ;; esac
+        done
+        # Emit via an external `cat` (heredoc) so the records are flushed even
+        # though this process stays alive afterwards — bash builtins block-buffer
+        # when stdout is a pipe, which would hide the lines from the follower.
+        cat <<'EOF'
+05:00:00.000 DBG stub debug line component=daemon
+05:00:00.001 INF stub info line component=daemon
+05:00:00.002 WRN stub warn line component=daemon
+05:00:00.003 ERR stub error line component=daemon
+EOF
+        [ "$follow" = 1 ] || exit 0
+        while :; do sleep 5; done
+        ;;
       *)
         exit 0
         ;;

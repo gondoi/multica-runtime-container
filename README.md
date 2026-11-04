@@ -126,8 +126,51 @@ See [`.env.example`](.env.example) for optional non-secret knobs. Tokens prefer 
 | `secrets/git/GITHUB_TOKEN` | git HTTPS PAT (**required** unless GitLab/Gitea **or** GitHub App trio) |
 | `secrets/git/GITHUB_APP_*` | App ID + installation ID + PEM (alternative to `GITHUB_TOKEN`) |
 | `MULTICA_WORKSPACES_ROOT` | Configurable workspaces root (default `/home/agent/workspaces`) |
+| `MULTICA_LOG_LEVEL` | Log level mirrored to container stdout: `DEBUG` \| `INFO` (default) \| `WARN` \| `ERROR`. See [Daemon log level](#daemon-log-level-multica_log_level). |
 | `MULTICA_WORKSPACE` | Default workspace after login: slug, display name, or UUID (e.g. `fuel-labs`). Fallback: `MULTICA_WORKSPACE_ID`, then Secret `config.json` `.workspace_id`. |
 | `MULTICA_WORKSPACE_ID` | Legacy alias of `MULTICA_WORKSPACE` (same resolution) |
+
+## Daemon log level (`MULTICA_LOG_LEVEL`)
+
+`MULTICA_LOG_LEVEL` (default `INFO`) controls which daemon log records reach
+**container stdout** (`docker logs` / `docker compose logs` / `kubectl logs`).
+Accepted values: `DEBUG`, `INFO`, `WARN`, `ERROR` (case-insensitive). An
+unrecognised value is a hard boot failure, not a silent fallback.
+
+```bash
+docker run -e MULTICA_LOG_LEVEL=WARN … multica-runtime:local
+```
+
+### What it does — and does not — do
+
+**The daemon itself is not re-leveled.** As of Multica CLI 0.8.0 (the version
+pinned in the `Dockerfile`) `multica daemon start` exposes no log-level knob:
+
+| Check | Result |
+| --- | --- |
+| `multica daemon start --help` | no `--log-level` (nearest is global `multica --debug` / `MULTICA_DEBUG`, which only adds error detail) |
+| `MULTICA_LOG_LEVEL` / any level env | not read by the CLI (binary string scan: only `MULTICA_DEBUG`) |
+| `multica config set <key>` | supported keys have no log level |
+| `multica daemon logs` | `-f/--follow`, `-n/--lines` only — no filtering |
+
+The daemon's handler level is fixed at debug, so `~/.multica/daemon.log` always
+records `DBG` lines (and is rotated/compressed as usual). What this image
+controls is the **collection side**: `bin/log-level-filter.sh` sits on the
+`multica daemon logs --follow` pipeline that the entrypoint mirrors to stdout,
+keeping records at or above the configured level. Lines carrying no level token
+(multiline continuations, stack traces) always pass through, since the filter
+is stateless — a dropped `DBG` record can therefore leave an orphan
+continuation line behind.
+
+Consequences worth knowing:
+
+- `MULTICA_HOME/daemon.log` (inside the container) is still verbose — pull it
+  when you need DEBUG detail: `docker exec <c> tail -n 200 ~/.multica/daemon.log`.
+- The daemon process's own (unlevelled) stdout/boot banner is not filtered.
+- Real quieting needs an upstream `--log-level` / `MULTICA_LOG_LEVEL` on
+  `multica daemon start`; that ask is tracked on the issue that produced this
+  feature. Once the CLI supports it, this filter becomes a pass-through and can
+  be dropped.
 
 ## Design notes
 
