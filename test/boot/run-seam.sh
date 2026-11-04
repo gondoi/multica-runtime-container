@@ -29,6 +29,7 @@ fail=0
 cname_env=""
 cname_proj=""
 cname_slug=""
+cname_pwd=""
 
 ok() { printf 'PASS  %s\n' "$*"; pass=$((pass + 1)); }
 bad() { printf 'FAIL  %s\n' "$*"; fail=$((fail + 1)); }
@@ -37,6 +38,7 @@ cleanup() {
   [ -n "$cname_env" ] && docker rm -f "$cname_env" >/dev/null 2>&1 || true
   [ -n "$cname_proj" ] && docker rm -f "$cname_proj" >/dev/null 2>&1 || true
   [ -n "$cname_slug" ] && docker rm -f "$cname_slug" >/dev/null 2>&1 || true
+  [ -n "$cname_pwd" ] && docker rm -f "$cname_pwd" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -99,6 +101,7 @@ echo "==> Crash fixtures (hard-fail secrets)"
 run_crash no-multica "$FIX/crash-no-multica.env"
 run_crash no-cursor "$FIX/crash-no-cursor.env"
 run_crash no-git "$FIX/crash-no-git.env"
+run_crash github-password-public "$FIX/crash-github-password-public.env"
 
 echo "==> Happy path — env-file secrets (stub multica → Ready)"
 cname_env="multica-boot-seam-env-$$"
@@ -191,6 +194,29 @@ if [ "$slug_ws" = "00000000-0000-0000-0000-000000000001" ] \
 else
   bad "MULTICA_WORKSPACE slug pin failed: live='$slug_ws'"
   docker logs "$cname_slug" >&2 || true
+fi
+
+echo "==> Happy path — GitHub Enterprise Server password tier (lowest priority)"
+cname_pwd="multica-boot-seam-pwd-$$"
+docker run -d --name "$cname_pwd" \
+  --env-file "$FIX/happy-github-password.env" \
+  -v "$STUB:/usr/local/bin/multica:ro" \
+  -v "$SECRETS/multica-home:/run/secrets/multica-home:ro" \
+  -v "$SECRETS/cursor:/run/secrets/cursor:ro" \
+  -v "$SECRETS/git-password:/run/secrets/git-password:ro" \
+  "$IMAGE" >/dev/null
+assert_ready_container "$cname_pwd" "happy/github-password Ready"
+if docker exec "$cname_pwd" grep -q 'https://boot-seam-agent:boot-seam-password@ghes.boot-seam.invalid' /home/agent/.git-credentials; then
+  ok "password tier: User/Password/Host Secret files → git credential helper"
+else
+  bad "password tier: .git-credentials missing GHES host entry"
+  docker exec "$cname_pwd" cat /home/agent/.git-credentials >&2 || true
+  docker logs "$cname_pwd" >&2 || true
+fi
+if docker logs "$cname_pwd" 2>&1 | grep -q 'GitHub password auth configured'; then
+  ok "password tier: boot logs the chosen tier"
+else
+  bad "password tier: boot did not log the chosen tier"
 fi
 
 cleanup

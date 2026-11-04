@@ -103,6 +103,11 @@ JSON
         fi
         exit 1
         ;;
+      logs)
+        # entrypoint streams `daemon logs --follow` in the foreground and exits
+        # when either it or the daemon dies — stay alive like the real CLI.
+        exec sleep infinity
+        ;;
       *)
         exit 0
         ;;

@@ -73,7 +73,11 @@ if [ -n "${GITHUB_APP_ID:-}" ] && [ -n "${GITHUB_APP_INSTALLATION_ID:-}" ]; then
     have_git_token=1
   fi
 fi
-[ "$have_git_token" = 1 ] || die "git HTTPS auth required: set GITHUB_TOKEN and/or GITLAB_TOKEN and/or GITEA_TOKEN, or GitHub App credentials (GITHUB_APP_ID + GITHUB_APP_INSTALLATION_ID + PEM) under /run/secrets/git/"
+# Lowest-priority tier: GitHub Enterprise Server username + password (see configure-git-auth.sh).
+if [ -n "${GITHUB_USER:-}" ] && [ -n "${GITHUB_PASSWORD:-}" ]; then
+  have_git_token=1
+fi
+[ "$have_git_token" = 1 ] || die "git HTTPS auth required: set GITHUB_TOKEN and/or GITLAB_TOKEN and/or GITEA_TOKEN, GitHub App credentials (GITHUB_APP_ID + GITHUB_APP_INSTALLATION_ID + PEM), or GitHub Enterprise Server username + password (GITHUB_USER + GITHUB_PASSWORD) under /run/secrets/git/"
 
 # ── 4. Git credential helper (hard-fail if helper cannot configure) ───────
 /usr/local/bin/configure-git-auth.sh

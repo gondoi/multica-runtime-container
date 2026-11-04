@@ -12,6 +12,9 @@
 #   ${MULTICA_HOME_SECRET_DIR:-/run/secrets/multica-home}/daemon.id
 #   ${CURSOR_API_KEY_FILE:-/run/secrets/cursor/CURSOR_API_KEY}
 #   ${GITHUB_TOKEN_FILE:-/run/secrets/git/GITHUB_TOKEN}
+#   ${GITHUB_USER_FILE:-/run/secrets/git/GITHUB_USER}
+#   ${GITHUB_PASSWORD_FILE:-/run/secrets/git/GITHUB_PASSWORD}
+#   ${GITHUB_HOST_FILE:-/run/secrets/git/GITHUB_HOST}
 #   ${GITLAB_TOKEN_FILE:-/run/secrets/git/GITLAB_TOKEN}
 #   ${GITEA_TOKEN_FILE:-/run/secrets/git/GITEA_TOKEN}
 #   ${GITHUB_APP_ID_FILE:-/run/secrets/git/GITHUB_APP_ID}
@@ -77,6 +80,10 @@ fi
 # ── Cursor + git token / GitHub App files ─────────────────────────────────
 read_secret_file CURSOR_API_KEY "${CURSOR_API_KEY_FILE:-/run/secrets/cursor/CURSOR_API_KEY}"
 read_secret_file GITHUB_TOKEN "${GITHUB_TOKEN_FILE:-/run/secrets/git/GITHUB_TOKEN}"
+# GitHub Enterprise Server password tier (lowest priority) + host selector.
+read_secret_file GITHUB_USER "${GITHUB_USER_FILE:-/run/secrets/git/GITHUB_USER}"
+read_secret_file GITHUB_PASSWORD "${GITHUB_PASSWORD_FILE:-/run/secrets/git/GITHUB_PASSWORD}"
+read_secret_file GITHUB_HOST "${GITHUB_HOST_FILE:-/run/secrets/git/GITHUB_HOST}"
 read_secret_file GITLAB_TOKEN "${GITLAB_TOKEN_FILE:-/run/secrets/git/GITLAB_TOKEN}"
 read_secret_file GITEA_TOKEN "${GITEA_TOKEN_FILE:-/run/secrets/git/GITEA_TOKEN}"
 read_secret_file GITHUB_APP_ID "${GITHUB_APP_ID_FILE:-/run/secrets/git/GITHUB_APP_ID}"

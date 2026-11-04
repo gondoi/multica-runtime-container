@@ -40,6 +40,13 @@ spec:
             #   value: /run/secrets/git/GITHUB_APP_INSTALLATION_ID
             # - name: GITHUB_APP_PRIVATE_KEY_FILE
             #   value: /run/secrets/git/GITHUB_APP_PRIVATE_KEY
+            # Optional GitHub Enterprise Server password tier (lowest priority):
+            # - name: GITHUB_HOST_FILE
+            #   value: /run/secrets/git/GITHUB_HOST
+            # - name: GITHUB_USER_FILE
+            #   value: /run/secrets/git/GITHUB_USER
+            # - name: GITHUB_PASSWORD_FILE
+            #   value: /run/secrets/git/GITHUB_PASSWORD
             - name: MULTICA_WORKSPACES_ROOT
               value: /home/agent/workspaces
             - name: MULTICA_AGENT_RUNTIME_NAME
@@ -99,6 +106,7 @@ spec:
             secretName: multica-runtime-git
             # PAT path (default). For App auth, replace items with:
             #   GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, GITHUB_APP_PRIVATE_KEY
+            # For GHES password auth, add: GITHUB_HOST, GITHUB_USER, GITHUB_PASSWORD
             # (and drop GITHUB_TOKEN). Secret keys must match items or the pod fails to mount.
             items:
               - key: GITHUB_TOKEN

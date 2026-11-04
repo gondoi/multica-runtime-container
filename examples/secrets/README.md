@@ -18,7 +18,16 @@ secrets/
     # GITHUB_APP_ID
     # GITHUB_APP_INSTALLATION_ID
     # GITHUB_APP_PRIVATE_KEY   # full PEM including BEGIN/END lines
+    # Option C: GitHub Enterprise Server username + password (lowest priority;
+    # github.com rejects password auth for git-over-HTTPS — pair it with a
+    # GITHUB_HOST pointing at the GHES instance)
+    # GITHUB_USER
+    # GITHUB_PASSWORD
+    # GITHUB_HOST              # host for all GitHub tiers (default github.com)
 ```
+
+GitHub tiers resolve **App > PAT > password** (first complete one wins; an
+incomplete App config falls through to the next tier).
 
 ## Compose
 
@@ -34,6 +43,10 @@ printf '%s' 'ghp_…'    > secrets/git/GITHUB_TOKEN
 # printf '%s' '123456'   > secrets/git/GITHUB_APP_ID
 # printf '%s' '12345678' > secrets/git/GITHUB_APP_INSTALLATION_ID
 # cp /path/to/app.private-key.pem secrets/git/GITHUB_APP_PRIVATE_KEY
+# Option C — GitHub Enterprise Server username + password (lowest priority):
+# printf '%s' 'ghe.example.com' > secrets/git/GITHUB_HOST
+# printf '%s' 'agent'           > secrets/git/GITHUB_USER
+# printf '%s' '…'               > secrets/git/GITHUB_PASSWORD
 docker compose up -d --build
 ```
 

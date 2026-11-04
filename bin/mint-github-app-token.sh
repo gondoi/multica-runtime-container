@@ -8,7 +8,9 @@
 #   GITHUB_APP_PRIVATE_KEY_FILE     (path to PEM; default /run/secrets/git/GITHUB_APP_PRIVATE_KEY)
 #
 # Optional:
-#   GITHUB_API_URL                  (default https://api.github.com)
+#   GITHUB_API_URL                  (default https://api.github.com; for
+#                                    GitHub Enterprise Server, derived from
+#                                    GITHUB_HOST as https://<host>/api/v3)
 #
 # Prints the token to stdout. Logs go to stderr. Exit 1 on failure.
 # Does not echo the private key or token on stderr.
@@ -17,7 +19,16 @@ set -euo pipefail
 log() { printf '%s\n' "$*" >&2; }
 die() { log "FATAL: $*"; exit 1; }
 
-API_URL="${GITHUB_API_URL:-https://api.github.com}"
+api_default="https://api.github.com"
+gh_host="${GITHUB_HOST:-github.com}"
+gh_host="${gh_host#https://}"
+gh_host="${gh_host#http://}"
+gh_host="${gh_host%%/*}"
+case "$gh_host" in
+  ""|github.com|www.github.com) ;;
+  *) api_default="https://${gh_host}/api/v3" ;;
+esac
+API_URL="${GITHUB_API_URL:-$api_default}"
 KEY_FILE="${GITHUB_APP_PRIVATE_KEY_FILE:-/run/secrets/git/GITHUB_APP_PRIVATE_KEY}"
 ID_FILE="${GITHUB_APP_ID_FILE:-/run/secrets/git/GITHUB_APP_ID}"
 INSTALLATION_ID_FILE="${GITHUB_APP_INSTALLATION_ID_FILE:-/run/secrets/git/GITHUB_APP_INSTALLATION_ID}"
