@@ -84,12 +84,14 @@ COPY bin/configure-git-auth.sh /usr/local/bin/configure-git-auth.sh
 COPY bin/mint-github-app-token.sh /usr/local/bin/mint-github-app-token.sh
 COPY bin/github-app-credential-helper.sh /usr/local/bin/github-app-credential-helper.sh
 COPY bin/materialize-secrets.sh /usr/local/bin/materialize-secrets.sh
+COPY bin/log-level-filter.sh /usr/local/bin/log-level-filter.sh
 COPY bin/ready.sh /usr/local/bin/ready.sh
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /usr/local/bin/configure-git-auth.sh \
       /usr/local/bin/mint-github-app-token.sh \
       /usr/local/bin/github-app-credential-helper.sh \
       /usr/local/bin/materialize-secrets.sh \
+      /usr/local/bin/log-level-filter.sh \
       /usr/local/bin/ready.sh /entrypoint.sh && \
     chown agent:agent /entrypoint.sh
 
