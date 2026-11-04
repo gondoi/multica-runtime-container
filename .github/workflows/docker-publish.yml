@@ -110,5 +110,5 @@ jobs:
           set -euo pipefail
           docker pull "$IMAGE"
           docker run --rm --entrypoint /bin/bash "$IMAGE" -lc \
-            'command -v multica cursor-agent asdf git ssh jq curl tini'
+            'command -v multica cursor-agent asdf git ssh jq curl tini aws && aws --version'
           echo "smoke ok: $IMAGE"

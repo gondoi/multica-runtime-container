@@ -182,6 +182,21 @@ if docker exec "$cname_proj" gh --version >/dev/null 2>&1; then
 else
   bad "gh CLI missing from image"
 fi
+
+# AWS CLI: shipped with no baked-in credentials; the boot log names the
+# credential source the SDK chain resolved. The fixture wires none, so the
+# line must say so — and the container still goes Ready (informational only).
+if docker exec "$cname_proj" aws --version >/dev/null 2>&1; then
+  ok "aws CLI (v2) present in image"
+else
+  bad "aws CLI missing from image"
+fi
+if wait_log "$cname_proj" 'aws auth: none detected'; then
+  ok "boot reports resolved AWS credential source (none wired in fixture)"
+else
+  bad "entrypoint did not log the AWS credential source"
+  docker logs "$cname_proj" >&2 || true
+fi
 if docker exec "$cname_proj" grep -qx 'GH_TOKEN=ghp_boot_seam_projected' /home/agent/.multica/git-auth.env; then
   ok "git-auth.env seeds GH_TOKEN for gh from the resolved tier"
 else

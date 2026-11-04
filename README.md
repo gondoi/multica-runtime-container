@@ -32,11 +32,12 @@ GitHub Actions (`.github/workflows/docker-publish.yml`) builds **linux/amd64 + l
 | `asdf` | Versioned tool plugins (languages / CLIs) on the workspaces volume |
 | `git`, `openssh-client`, `jq`, `curl`, `procps` | Checkout, scripting, readiness probes |
 | `gh` (GitHub CLI) | Agent tooling (`gh pr create`, `gh api`, `gh run`); authenticates from the resolved tier — App tier re-mints per invocation |
+| `aws` (AWS CLI v2) | Agent tooling to inspect/manage AWS resources; auth resolved by the SDK default chain (IRSA / instance profile / mounted config) — no keys baked in |
 | `tini` | PID 1 — reaps orphans, forwards signals |
 | non-root `agent` user | Default runtime identity |
 | `/usr/local/bin/ready.sh` | Shallow Ready probe (daemon up — not full inventory) |
 
-**Not** in the image: language toolchains (install via asdf at runtime), AWS profile wiring (deferred), multi-CLI agent sets (Claude/Codex/etc.), or any private consumer inventory.
+**Not** in the image: language toolchains (install via asdf at runtime), AWS credentials of any kind, multi-CLI agent sets (Claude/Codex/etc.), or any private consumer inventory.
 
 ## Boot contract
 
@@ -110,6 +111,48 @@ For orgs that disallow PATs, create a GitHub App with **minimum** permissions:
 
 Install the App on the target account/org (select only the repos agents need). Project App ID, installation ID, and the downloaded PEM under `/run/secrets/git/`. Boot mints an installation token and configures a git credential helper that remints when the ~1h token expires.
 
+## AWS CLI
+
+`aws` (v2, pinned in the `Dockerfile`) is installed for agents to inspect and
+manage AWS resources (`aws sts get-caller-identity`, `aws s3 ls`, `aws ec2
+describe-instances`, …). **No AWS credentials are baked into the image or
+written by any script here** — this container does zero credential plumbing
+for AWS; it only installs the binary and documents how the AWS SDK's own
+default credential chain finds credentials wherever you run it.
+
+### AWS auth tiers
+
+Highest trust first — pick the topmost tier your platform supports:
+
+⚠️ **Flagging this as higher-risk, same as the GitHub auth tiers**: whichever
+tier you pick grants the container (and therefore every agent task running in
+it) whatever AWS permissions that identity has. Scope the IAM role/policy to
+the minimum the agents actually need, and prefer the tiers that avoid
+long-lived static keys.
+
+| Tier | Mechanism | Where it's wired | Static keys in the container? |
+| --- | --- | --- | --- |
+| 1 · IRSA (EKS, best) | Pod's ServiceAccount is annotated with an IAM role ARN; EKS injects `AWS_ROLE_ARN` + `AWS_WEB_IDENTITY_TOKEN_FILE` and projects the token — the AWS SDK default chain picks it up with zero container-side config | `examples/k8s/serviceaccount.yaml` (annotation) + `serviceAccountName` in `deployment.yaml` — see [`docs/kubernetes.md`](docs/kubernetes.md) | No |
+| 2 · Instance profile / ECS task role | EC2 instance profile or ECS task role; the SDK default chain calls the metadata service automatically | Node/task IAM role — nothing in this repo to configure | No |
+| 3 · Mounted `~/.aws` config (fallback, lowest priority) | Secret-projected (or compose bind-mounted) `config`/`credentials` files, pointed to via `AWS_CONFIG_FILE`/`AWS_SHARED_CREDENTIALS_FILE` | `docker-compose.yml`, `examples/k8s/secret.example.yaml` (commented) | Only if you put static `aws_access_key_id`/`aws_secret_access_key` in the mounted file — avoid this when tiers 1 or 2 are available |
+
+This image never writes `~/.aws` itself — there is no `materialize-secrets.sh`
+step for AWS, deliberately, so a mounted `config`/`credentials` file is read
+straight from the Secret/bind-mount path via the two env vars above and
+nothing is copied or logged. Tier selection is **by what you wire outside the
+container** (ServiceAccount annotation, instance role, or a mounted file) —
+there is no `AWS_AUTH_TIER` switch to force one, because the SDK's own chain
+already tries them in a fixed, well-documented order.
+
+Footprint: the official v2 installer adds ~236 MB (`/usr/local/aws-cli`) to the
+image (~1.05 GB built here). There is no opt-out build arg — a slim variant
+would need a second Dockerfile stage/target rather than a flag.
+
+Boot logs which source the chain resolves (`aws auth: …` from
+`bin/aws-credential-source.sh`) — informational only, never a gate, never a
+credential value. Docker/compose specifics: [`docs/docker.md`](docs/docker.md);
+Kubernetes/IRSA walkthrough: [`docs/kubernetes.md`](docs/kubernetes.md).
+
 ## Build locally
 
 ```bash
@@ -120,7 +163,7 @@ Smoke that baseline binaries exist:
 
 ```bash
 docker run --rm --entrypoint /bin/bash multica-runtime:local -lc \
-  'command -v multica cursor-agent gh asdf git ssh jq curl tini ready.sh materialize-secrets.sh && gh --version'
+  'command -v multica cursor-agent gh aws asdf git ssh jq curl tini ready.sh materialize-secrets.sh && gh --version && aws --version'
 ```
 
 ### Compose (laptop parity)
@@ -217,7 +260,7 @@ Consequences worth knowing:
 - Repos are **not** cloned at image build or at container start. Register them in Multica workspace/project metadata; materialize with `multica repo checkout` during tasks (first task may cold-clone).
 - `asdf` is installed with plugin-install capability; pin tool versions on the workspaces volume, not in the image.
 - Patterns inspired by community Multica runtimes (`tini`, non-root user, forge HTTPS helpers) — adapted for a Cursor-first, asdf-based baseline.
-- AWS ConfigMap / aws-sso wiring is deferred past first daemon smoke.
+- AWS CLI is installed with no credential plumbing of its own — see [AWS CLI auth tiers](#aws-auth-tiers). `aws-sso` / `aws configure sso` wiring is still deferred (SSO needs an interactive browser step that doesn't fit a headless container).
 
 ## License
 

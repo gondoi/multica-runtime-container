@@ -5,6 +5,7 @@
 #   3. Hard-fail gates (required binaries + Multica/Cursor/git-auth secrets)
 #   4. Configure git HTTPS credential helper
 #   4b. Validate MULTICA_LOG_LEVEL + export it (log-stream filter, see below)
+#   4c. Report the resolved AWS credential source (informational; no creds)
 #   5. login → pin workspace (env/Secret) → exec multica daemon start --foreground
 #
 # Ready = daemon is up after gates. There is NO boot-time inventory sync —
@@ -109,6 +110,16 @@ if [ -r "$GIT_AUTH_ENV" ]; then
   # shellcheck disable=SC1090
   . "$GIT_AUTH_ENV"
   set +a
+fi
+
+# ── 4c. AWS credential source (informational only) ────────────────────────
+# The image ships the AWS CLI with zero credential plumbing of its own: the SDK
+# default chain resolves creds from IRSA, an instance/task role, or a mounted
+# config file. Log which source wins so an agent's "Unable to locate
+# credentials" is debuggable from `docker logs` without exec'ing in. Never
+# fatal, and the helper prints no credential values (bin/aws-credential-source.sh).
+if [ -x /usr/local/bin/aws-credential-source.sh ]; then
+  log "aws auth: $(/usr/local/bin/aws-credential-source.sh 2>/dev/null || printf 'source detection failed')"
 fi
 
 # Export Cursor key for cursor-agent (Secret / env-file / file-mount parity).
