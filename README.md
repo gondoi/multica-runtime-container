@@ -373,6 +373,16 @@ explicit `MULTICA_DAEMON_DEVICE_NAME`. Bad input is a hard boot failure, not a
 silent fallback. Boot logs the resolved name
 (`runtime machine name: 'fuel-general' …`).
 
+**First place to look when the UI still shows a generated name:** boot logs a
+warning when `MULTICA_AGENT_RUNTIME_NAME` was changed but no machine name is
+set — that variable is the daemon's `--runtime-name` and never reaches the
+runtime list:
+
+```
+WARN: MULTICA_AGENT_RUNTIME_NAME='multica-runtime-prod' does not change the
+runtime-list name … — set MULTICA_MACHINE_NAME='multica-runtime-prod' instead
+```
+
 | Knob | Effect on the runtime list |
 | --- | --- |
 | `MULTICA_MACHINE_NAME` / `MULTICA_DAEMON_DEVICE_NAME` | `Cursor (fuel-general)` / `Claude (fuel-general)` — machine part of the default name (this image's option) |

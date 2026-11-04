@@ -71,6 +71,15 @@ if [ -n "$MULTICA_MACHINE_NAME" ]; then
   log "runtime machine name: '${MULTICA_MACHINE_NAME}' (runtime list shows '<Provider> (${MULTICA_MACHINE_NAME})')"
 else
   log "runtime machine name: default (OS hostname) — set MULTICA_MACHINE_NAME for a readable runtime-list name"
+  # The most common mistake this image has produced: setting
+  # MULTICA_AGENT_RUNTIME_NAME (the daemon's --runtime-name, which the image also
+  # defaults to "multica-runtime") and expecting the runtime list to show it.
+  # It does not — so point at the knob that works, but only when the value was
+  # actually overridden away from the image default (otherwise every laptop
+  # would get a warning on a normal boot).
+  if [ "$MULTICA_AGENT_RUNTIME_NAME" != "multica-runtime" ]; then
+    log "WARN: MULTICA_AGENT_RUNTIME_NAME='${MULTICA_AGENT_RUNTIME_NAME}' does not change the runtime-list name (it is the daemon's --runtime-name, not its device name) — set MULTICA_MACHINE_NAME='${MULTICA_AGENT_RUNTIME_NAME}' to show that name in Multica's runtime list"
+  fi
 fi
 
 SERVER_URL="${MULTICA_SERVER_URL:-https://api.multica.ai}"
