@@ -53,6 +53,20 @@ chmod +x "$STUB" "$ROOT/entrypoint.sh" \
   "$ROOT/bin/gh-wrapper.sh" "$ROOT/bin/log-level-filter.sh" \
   "$ROOT/bin/ready.sh"
 
+wait_log() {
+  # wait_log <container> <grep-pattern> [tries] — docker's log driver can lag the
+  # container by a beat, so a single `docker logs` right after an exec-based
+  # readiness check is racy. Poll instead of failing on a partial flush.
+  local cname="$1" pattern="$2" tries="${3:-10}" i
+  for i in $(seq 1 "$tries"); do
+    if docker logs "$cname" 2>&1 | grep -q -- "$pattern"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 run_crash() {
   local name="$1" envfile="$2"
   echo "==> Crash fixture: $name"
@@ -154,7 +168,7 @@ else
 fi
 
 # Ready with projected Cursor key (no CURSOR_API_KEY in env-file) proves file mount worked.
-if docker logs "$cname_proj" 2>&1 | grep -q 'gates passed'; then
+if wait_log "$cname_proj" 'gates passed'; then
   ok "CURSOR_API_KEY gate passed via projected file mount"
 else
   bad "projected Cursor key path did not reach gates-passed"
@@ -214,7 +228,7 @@ docker run -d --name "$cname_slug" \
 assert_ready_container "$cname_slug" "happy/slug Ready"
 slug_ws="$(docker exec "$cname_slug" jq -r '.workspace_id // empty' /home/agent/.multica/config.json 2>/dev/null || true)"
 if [ "$slug_ws" = "00000000-0000-0000-0000-000000000001" ] \
-  && docker logs "$cname_slug" 2>&1 | grep -q "workspace pin: default workspace_id=00000000-0000-0000-0000-000000000001 (from 'fuel-labs')"; then
+  && wait_log "$cname_slug" "workspace pin: default workspace_id=00000000-0000-0000-0000-000000000001 (from 'fuel-labs')"; then
   ok "MULTICA_WORKSPACE=fuel-labs resolves + pins after login"
 else
   bad "MULTICA_WORKSPACE slug pin failed: live='$slug_ws'"
@@ -239,7 +253,7 @@ else
   printf '%s\n' "$lvl_logs" >&2 || true
 fi
 
-if docker logs "$cname_proj" 2>&1 | grep -q 'daemon log stream level: INFO'; then
+if wait_log "$cname_proj" 'daemon log stream level: INFO'; then
   ok "entrypoint reports applied log level"
 else
   bad "entrypoint did not report applied log level"
@@ -287,7 +301,7 @@ else
   docker exec "$cname_pwd" cat /home/agent/.git-credentials >&2 || true
   docker logs "$cname_pwd" >&2 || true
 fi
-if docker logs "$cname_pwd" 2>&1 | grep -q 'GitHub password auth configured'; then
+if wait_log "$cname_pwd" 'GitHub password auth configured'; then
   ok "password tier: boot logs the chosen tier"
 else
   bad "password tier: boot did not log the chosen tier"
