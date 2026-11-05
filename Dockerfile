@@ -175,6 +175,7 @@ COPY bin/materialize-secrets.sh /usr/local/bin/materialize-secrets.sh
 COPY bin/log-level-filter.sh /usr/local/bin/log-level-filter.sh
 COPY bin/aws-credential-source.sh /usr/local/bin/aws-credential-source.sh
 COPY bin/materialize-aws.sh /usr/local/bin/materialize-aws.sh
+COPY bin/egress-proxy.sh /usr/local/bin/egress-proxy.sh
 COPY bin/aws-sso-guard.sh /usr/local/bin/aws-sso
 COPY bin/ready.sh /usr/local/bin/ready.sh
 COPY bin/gh-wrapper.sh /usr/local/bin/gh
@@ -188,6 +189,7 @@ RUN chmod +x /usr/local/bin/agent-harness.sh \
       /usr/local/bin/log-level-filter.sh \
       /usr/local/bin/aws-credential-source.sh \
       /usr/local/bin/materialize-aws.sh \
+      /usr/local/bin/egress-proxy.sh \
       /usr/local/bin/aws-sso \
       /usr/local/bin/ready.sh /entrypoint.sh && \
     chown agent:agent /entrypoint.sh

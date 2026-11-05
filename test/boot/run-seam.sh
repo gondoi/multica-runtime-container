@@ -12,6 +12,8 @@
 #     credential, binary usable as the non-root user, env reaching the daemon)
 #   - login workspace_id clobber → re-pin from Secret / MULTICA_WORKSPACE slug
 #   - AWS ConfigMap mounts → PVC provider homes; operator-only login guard
+#   - optional egress control: iron-proxy MITM CA trusted + fail-closed when the
+#     CA is missing (default off = zero change to existing boots)
 #
 # Usage (from repo root):
 #   ./test/boot/run-seam.sh
@@ -23,6 +25,7 @@ IMAGE="${IMAGE:-multica-runtime:local}"
 FIX="$ROOT/test/boot/fixtures"
 STUB="$ROOT/test/boot/stubs/multica"
 SECRETS="$FIX/secrets"
+CERTS="$FIX/certs"
 AWS_EX="$ROOT/examples/aws"
 TIMEOUT_READY="${TIMEOUT_READY:-30}"
 
@@ -40,6 +43,7 @@ cname_claude=""
 cname_machine=""
 cname_nolog=""
 cname_wedged=""
+cname_egress=""
 
 ok() { printf 'PASS  %s\n' "$*"; pass=$((pass + 1)); }
 bad() { printf 'FAIL  %s\n' "$*"; fail=$((fail + 1)); }
@@ -55,6 +59,7 @@ cleanup() {
   [ -n "$cname_claude" ] && docker rm -f "$cname_claude" >/dev/null 2>&1 || true
   [ -n "$cname_nolog" ] && docker rm -f "$cname_nolog" >/dev/null 2>&1 || true
   [ -n "$cname_wedged" ] && docker rm -f "$cname_wedged" >/dev/null 2>&1 || true
+  [ -n "$cname_egress" ] && docker rm -f "$cname_egress" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -68,6 +73,7 @@ chmod +x "$STUB" "$ROOT/entrypoint.sh" \
   "$ROOT/bin/mint-github-app-token.sh" "$ROOT/bin/github-app-credential-helper.sh" \
   "$ROOT/bin/gh-wrapper.sh" "$ROOT/bin/log-level-filter.sh" \
   "$ROOT/bin/aws-credential-source.sh" \
+  "$ROOT/bin/egress-proxy.sh" \
   "$ROOT/bin/ready.sh"
 
 wait_log() {
@@ -163,6 +169,7 @@ run_crash no-git "$FIX/crash-no-git.env"
 run_crash bad-log-level "$FIX/crash-bad-log-level.env"
 run_crash github-password-public "$FIX/crash-github-password-public.env"
 run_crash machine-name-conflict "$FIX/crash-machine-name-conflict.env"
+run_crash egress-proxy-no-ca "$FIX/crash-egress-proxy-no-ca.env"
 
 echo "==> Happy path — env-file secrets (stub multica → Ready)"
 cname_env="multica-boot-seam-env-$$"
@@ -558,6 +565,76 @@ if docker exec "$cname_aws" printenv AWS_PROFILE >/dev/null 2>&1; then
   bad "AWS_PROFILE unexpectedly set in container env"
 else
   ok "AWS_PROFILE unset (fail closed default)"
+fi
+
+echo "==> Happy path — optional egress proxy (iron-proxy): MITM CA trusted, default off"
+# Egress policy itself lives in the proxy (allowlist, audit log); this image only
+# trusts its MITM CA and fails closed without it. The fixture mounts the
+# throwaway CA at the documented compose/k8s path and asserts the daemon env
+# carries the exported bundle, so every task the daemon spawns inherits it.
+cname_egress="multica-boot-seam-egress-$$"
+docker run -d --name "$cname_egress" \
+  --env-file "$FIX/happy-projected.env" \
+  -e MULTICA_EGRESS_PROXY=iron-proxy \
+  -e MULTICA_EGRESS_PROXY_CA=/run/certs/iron-proxy/ca.crt \
+  -v "$STUB:/usr/local/bin/multica:ro" \
+  -v "$SECRETS/multica-home:/run/secrets/multica-home:ro" \
+  -v "$SECRETS/cursor:/run/secrets/cursor:ro" \
+  -v "$SECRETS/git:/run/secrets/git:ro" \
+  -v "$CERTS/iron-proxy:/run/certs/iron-proxy:ro" \
+  "$IMAGE" >/dev/null
+assert_ready_container "$cname_egress" "happy/egress-proxy Ready"
+
+if wait_log "$cname_egress" 'egress proxy: iron-proxy'; then
+  ok "boot reports the iron-proxy mode it enabled"
+else
+  bad "boot did not report the enabled egress proxy"
+  docker logs "$cname_egress" >&2 || true
+fi
+
+if wait_log "$cname_egress" 'DNS routing is deployment-side'; then
+  ok "boot states DNS routing is the deployment's job (no false 'enforced' claim)"
+else
+  bad "boot did not describe the DNS-routing division of labour"
+  docker logs "$cname_egress" >&2 || true
+fi
+
+egress_bundle="/home/agent/.multica/egress-ca-bundle.crt"
+egress_bundle_body="$(docker exec "$cname_egress" cat "$egress_bundle" 2>/dev/null || true)"
+fixture_body="$(sed -n '3p' "$CERTS/iron-proxy/ca.crt")"
+cert_count="$(printf '%s' "$egress_bundle_body" | grep -c -- '-----BEGIN CERTIFICATE-----' || true)"
+if printf '%s' "$egress_bundle_body" | grep -qF -- "$fixture_body" \
+  && [ "${cert_count:-0}" -gt 1 ]; then
+  ok "combined bundle = system CAs + proxy CA ($cert_count certs)"
+else
+  bad "combined CA bundle missing the proxy CA or the system CAs (count='${cert_count:-0}')"
+  docker exec "$cname_egress" ls -l "$egress_bundle" >&2 || true
+fi
+
+egress_pid="$(docker exec "$cname_egress" pgrep -f 'sleep infinity' 2>/dev/null | head -1 || true)"
+if [ -n "$egress_pid" ] \
+  && docker exec "$cname_egress" bash -c "tr '\\0' '\\n' < /proc/${egress_pid}/environ | grep -qx 'SSL_CERT_FILE=${egress_bundle}'" \
+  && docker exec "$cname_egress" bash -c "tr '\\0' '\\n' < /proc/${egress_pid}/environ | grep -qx 'NODE_EXTRA_CA_CERTS=${egress_bundle}'" \
+  && docker exec "$cname_egress" bash -c "tr '\\0' '\\n' < /proc/${egress_pid}/environ | grep -qx 'GIT_SSL_CAINFO=${egress_bundle}'"; then
+  ok "daemon env carries SSL_CERT_FILE/NODE_EXTRA_CA_CERTS/GIT_SSL_CAINFO (harnesses + git inherit CA trust)"
+else
+  bad "daemon environment is missing the egress CA env vars"
+fi
+
+# Rollback contract: the default boot (no MULTICA_EGRESS_PROXY) must be exactly
+# today's behaviour — no CA override in the daemon env at all.
+proj_pid="$(docker exec "$cname_proj" pgrep -f 'sleep infinity' 2>/dev/null | head -1 || true)"
+if wait_log "$cname_proj" 'egress proxy: off'; then
+  ok "default boot reports egress proxy: off"
+else
+  bad "default boot did not report egress proxy: off"
+  docker logs "$cname_proj" >&2 || true
+fi
+if [ -n "$proj_pid" ] \
+  && ! docker exec "$cname_proj" bash -c "tr '\\0' '\\n' < /proc/${proj_pid}/environ | grep -q '^SSL_CERT_FILE='"; then
+  ok "egress off exports no CA override (flip the flag back = today's behaviour)"
+else
+  bad "egress-off boot still exported SSL_CERT_FILE"
 fi
 
 echo "==> Happy path — daemon with no daemon.log (TTY-style stderr) still stays up"

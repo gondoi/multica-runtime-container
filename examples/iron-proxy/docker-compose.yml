@@ -1,0 +1,100 @@
+# multica-runtime behind an iron-proxy egress sidecar — worked example.
+#
+#   ./examples/iron-proxy/gen-ca.sh                 # CA for TLS re-signing (git-ignored)
+#   # lay out ../../secrets/* exactly as the root docker-compose.yml does
+#   docker compose -f examples/iron-proxy/docker-compose.yml up -d --build
+#   docker compose -f examples/iron-proxy/docker-compose.yml logs -f proxy
+#
+# Relative paths here resolve against THIS file's directory (Compose project
+# directory), so `../../` is the repo root and the secrets layout is shared with
+# the plain compose setup.
+#
+# What this file buys over the default compose file:
+#   - `dns: 10.231.0.2` — every lookup the workload makes is answered by
+#     iron-proxy, so traffic goes through it (docker's embedded DNS is
+#     deliberately unreachable; service names will NOT resolve here)
+#   - the proxy CA mounted read-only at /run/certs/iron-proxy/ca.crt + the two
+#     MULTICA_EGRESS_PROXY knobs, so the image fails closed without it
+#
+# Rollback = plain compose: `docker compose up -d` at the repo root. Nothing in
+# the image or the secrets layout changes.
+
+name: multica-runtime-iron-proxy
+
+services:
+  proxy:
+    # Pin a release: iron-proxy is pre-1.0 and config semantics move between
+    # minors. 0.56.0 is the newest tagged release as of this example (Docker Hub
+    # tags drop the "v": release v0.56.0 → image tag 0.56.0).
+    image: ironsh/iron-proxy:0.56.0
+    command: ["-config", "/etc/iron-proxy/proxy.yaml"]
+    volumes:
+      - ./proxy.yaml:/etc/iron-proxy/proxy.yaml:ro
+      # ca.crt + ca.key — the proxy is the only place the CA key exists.
+      - ./certs:/certs:ro
+    restart: unless-stopped
+    networks:
+      egress:
+        ipv4_address: 10.231.0.2
+    # Not published: nothing outside this network can use the proxy as an open
+    # relay. Audit log: one JSON line per request, `... logs proxy`.
+
+  runtime:
+    image: multica-runtime:local
+    build: ../..
+    env_file:
+      - path: ../../.env
+        required: false
+    environment:
+      MULTICA_WORKSPACES_ROOT: /home/agent/workspaces
+      MULTICA_AGENT_RUNTIME_NAME: ${MULTICA_AGENT_RUNTIME_NAME:-multica-runtime}
+      MULTICA_MACHINE_NAME: ${MULTICA_MACHINE_NAME:-}
+      MULTICA_LOG_LEVEL: ${MULTICA_LOG_LEVEL:-INFO}
+      MULTICA_AGENT_CLI: ${MULTICA_AGENT_CLI:-cursor}
+      # ── Egress control ──────────────────────────────────────────────────
+      # Enables MITM-CA trust + fail-closed boot. The allowlist itself lives in
+      # proxy.yaml (proxy side), not here.
+      MULTICA_EGRESS_PROXY: iron-proxy
+      MULTICA_EGRESS_PROXY_CA: /run/certs/iron-proxy/ca.crt
+      # Advisory boot check: a host the allowlist must allow anyway (Multica
+      # control plane). A failure is logged as a WARN and does not block boot;
+      # the proxy's audit log is the authority on policy.
+      MULTICA_EGRESS_PROXY_PROBE_URL: https://api.multica.ai/
+      # ── Secret layout (same contract as the root compose file) ──────────
+      MULTICA_HOME_SECRET_DIR: /run/secrets/multica-home
+      CURSOR_API_KEY_FILE: /run/secrets/cursor/CURSOR_API_KEY
+      ANTHROPIC_API_KEY_FILE: /run/secrets/claude/ANTHROPIC_API_KEY
+      CLAUDE_CODE_OAUTH_TOKEN_FILE: /run/secrets/claude/CLAUDE_CODE_OAUTH_TOKEN
+      ANTHROPIC_AUTH_TOKEN_FILE: /run/secrets/claude/ANTHROPIC_AUTH_TOKEN
+      GITHUB_TOKEN_FILE: /run/secrets/git/GITHUB_TOKEN
+    dns:
+      - 10.231.0.2
+    networks:
+      - egress
+    volumes:
+      - multica-workspaces:/home/agent/workspaces
+      - ../../secrets/multica-home:/run/secrets/multica-home:ro
+      - ../../secrets/cursor:/run/secrets/cursor:ro
+      - ../../secrets/claude:/run/secrets/claude:ro
+      - ../../secrets/git:/run/secrets/git:ro
+      # The CA certificate only — the key never enters the workload.
+      - ./certs/ca.crt:/run/certs/iron-proxy/ca.crt:ro
+      - ../../examples/aws/config:/run/config/aws/config:ro
+      - ../../examples/aws/config.yaml:/run/config/aws-sso/config.yaml:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/ready.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+
+volumes:
+  multica-workspaces:
+
+networks:
+  egress:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.231.0.0/24

@@ -75,6 +75,7 @@ Deployments (Compose, Kubernetes) should pin a release tag such as `v0.1.0`.
 | `tini` | PID 1 — reaps orphans, forwards signals |
 | non-root `agent` user | Default runtime identity |
 | `/usr/local/bin/ready.sh` | Shallow Ready probe (daemon up — not full inventory) |
+| `/usr/local/bin/egress-proxy.sh` | Optional MITM-CA trust + fail-closed boot when `MULTICA_EGRESS_PROXY=iron-proxy` (off by default) |
 
 **Not** in the image: language toolchains (install via asdf at runtime), AWS credentials of any kind, agent CLIs beyond Cursor + Claude Code (Codex, Copilot, …), or any private consumer AWS allowlist / inventory.
 
@@ -86,11 +87,12 @@ Order:
 1b. Resolve machine name (`MULTICA_MACHINE_NAME` → daemon `--device-name`, the runtime-list display name)
 2. Materialize Secret-projected Multica home (`config.json` + `daemon.id`) into ephemeral `~/.multica`; load Cursor/git token (and optional GitHub App) files
 3. Wire optional AWS ConfigMaps into PVC-backed `~/.aws` + `~/.config/aws-sso` (SSO cache on workspaces volume)
+3b. Optional egress control (`MULTICA_EGRESS_PROXY=iron-proxy`): validate the proxy's MITM CA, build one trust bundle (system CAs + proxy CA) and export it through the per-toolchain CA env vars — **fails closed** when the CA is missing/unusable. Default off. See [Egress control](#egress-control-optional)
 4. Hard gates — required binaries (`multica`, `gh`, `git`, `jq`, `curl`, `asdf`, `aws`, `aws-sso`), Multica auth, forge token **or** GitHub App / GHES credentials, and every harness named by `MULTICA_AGENT_CLI` (`cursor` → `cursor-agent` + `CURSOR_API_KEY`; `claude` → `claude` + an Anthropic credential)
 5. Configure git HTTPS credential helper; validate `MULTICA_LOG_LEVEL`; report AWS credential source
 6. `multica login` (token refresh) → **re-pin workspace** → daemon start --foreground
 
-**Ready** = daemon is up after gates. **Crash** = missing Multica/git secret, missing selected-harness binary or credential, unknown `MULTICA_AGENT_CLI`, or missing required binary (non-zero exit → CrashLoop). Missing AWS ConfigMaps → continue degraded (daemon still Ready).
+**Ready** = daemon is up after gates. **Crash** = missing Multica/git secret, missing selected-harness binary or credential, unknown `MULTICA_AGENT_CLI`, missing required binary (non-zero exit → CrashLoop), or `MULTICA_EGRESS_PROXY` enabled without a usable proxy CA. Missing AWS ConfigMaps → continue degraded (daemon still Ready).
 
 **Workspace pin** (after login): `MULTICA_WORKSPACE` (preferred; slug, display name, or UUID) → `MULTICA_WORKSPACE_ID` (same resolution) → projected Secret `config.json` `.workspace_id` → leave login default.
 
@@ -345,6 +347,8 @@ See [`.env.example`](.env.example) for optional non-secret knobs. Tokens prefer 
 | `MULTICA_WORKSPACE_ID` | Legacy alias of `MULTICA_WORKSPACE` (same resolution) |
 | `MULTICA_MACHINE_NAME` | Runtime-list display name — runtimes appear as `<Provider> (<name>)`, e.g. `Cursor (fuel-general)`. Default: OS hostname (the pod name under Kubernetes). See [Machine name](#machine-name-multica_machine_name). |
 | `MULTICA_DAEMON_DEVICE_NAME` | Native CLI alias of `MULTICA_MACHINE_NAME` (set only one — differing values are a hard boot error) |
+| `MULTICA_EGRESS_PROXY` | `off` (default, direct egress) \| `iron-proxy`. Enables MITM-CA trust + fail-closed boot. See [Egress control](#egress-control-optional). |
+| `MULTICA_EGRESS_PROXY_CA` | Proxy CA to trust (default `/run/certs/iron-proxy/ca.crt`); read-only mount, certificate only |
 
 ## Machine name (`MULTICA_MACHINE_NAME`)
 
@@ -454,6 +458,32 @@ Streaming is **best-effort by design**: the container's exit code is the
 daemon's exit code. A log follower that dies (missing `daemon.log`, `tail`
 missing, rotation trouble) logs a `WARN` and never takes the container down,
 because a log-stream failure is not a daemon failure.
+
+## Egress control (optional)
+
+By default the container has **no** egress policy: anything resolvable is
+reachable. `MULTICA_EGRESS_PROXY=iron-proxy` puts it behind a
+[iron-proxy](https://github.com/ironsh/iron-proxy) sidecar — default-deny
+allowlist, per-request audit log, MITM TLS — without adding code to the image:
+
+```bash
+# .env (the proxy itself, its DNS answer and the allowlist live in proxy.yaml)
+MULTICA_EGRESS_PROXY=iron-proxy
+MULTICA_EGRESS_PROXY_CA=/run/certs/iron-proxy/ca.crt
+```
+
+What the image does when that is set: validates the CA (missing, non-PEM or
+expired → **non-zero exit**, never a silent direct-egress fallback), builds one
+bundle = OS trust store + proxy CA, and exports it as `SSL_CERT_FILE`,
+`CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `NODE_EXTRA_CA_CERTS`,
+`REQUESTS_CA_BUNDLE` and `AWS_CA_BUNDLE` so the daemon **and every task it
+spawns** inherit trust. What it cannot do: re-point its own DNS — routing to the
+proxy (`--dns` / compose `dns:` / k8s `dnsConfig`) is the deployment's job, and
+DNS routing alone is bypassable by hardcoded IPs. No "enforced" claim is made.
+
+- Worked, verified compose example: [`examples/iron-proxy/`](examples/iron-proxy/) (CA generation, allowlist scoped to this image's egress, verify + rollback).
+- Evaluation, decision record, risks and what is deliberately **not** enabled (secret injection, Kubernetes, nftables/TPROXY enforcement): [`docs/egress-control.md`](docs/egress-control.md).
+- Opt-in end-to-end check: `./test/integration/egress-proxy.sh` (Docker + internet; not in CI).
 
 ## Design notes
 

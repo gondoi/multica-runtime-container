@@ -4,6 +4,8 @@
 #   1b. Resolve machine name (runtime-list display name)
 #   2. Materialize Secret-projected Multica home + Cursor/git tokens
 #   2a. Wire optional AWS ConfigMaps + SSO cache onto workspaces PVC
+#   2b. Optional egress control (iron-proxy): trust its MITM CA, fail closed
+#   2c. Daemon log level (collection-side filter)
 #   3. Hard-fail gates (required binaries + Multica/git-auth secrets, plus the
 #      agent CLI harness(es) named by MULTICA_AGENT_CLI)
 #   4. Configure git HTTPS credential helper
@@ -96,7 +98,17 @@ export MULTICA_DAEMON_ID="${MULTICA_DAEMON_ID:-$MULTICA_AGENT_RUNTIME_NAME}"
 source /usr/local/bin/materialize-aws.sh
 
 
-# ── 2b. Daemon log level (collection-side) ────────────────────────────────
+# ── 2b. Optional egress control (iron-proxy sidecar) ──────────────────────
+# MULTICA_EGRESS_PROXY=off (default) = today's direct egress, nothing exported.
+# iron-proxy = trust the proxy's MITM CA (combined system+proxy bundle exported
+# through each toolchain's CA env var) and FAIL CLOSED when the CA is missing or
+# unusable. DNS routing to the proxy is deployment-side (docker --dns, compose
+# dns:, k8s dnsConfig) — the container cannot re-point its own resolver.
+# shellcheck disable=SC1091
+source /usr/local/bin/egress-proxy.sh
+egress_proxy_boot || die "egress proxy gate failed (MULTICA_EGRESS_PROXY='${MULTICA_EGRESS_PROXY:-off}')"
+
+# ── 2c. Daemon log level (collection-side) ────────────────────────────────
 # `multica daemon start` has no --log-level flag and there is no log-level
 # env/config key (CLI 0.8.0); its handler level is fixed at debug and writes
 # DBG records to $MULTICA_HOME/daemon.log unconditionally. So MULTICA_LOG_LEVEL
