@@ -88,7 +88,7 @@ Order:
 2. Materialize Secret-projected Multica home (`config.json` + `daemon.id`) into ephemeral `~/.multica`; load Cursor/git token (and optional GitHub App) files
 3. Wire optional AWS ConfigMaps into PVC-backed `~/.aws` + `~/.config/aws-sso` (SSO cache on workspaces volume)
 3b. Optional egress control (`MULTICA_EGRESS_PROXY=iron-proxy`): validate the proxy's MITM CA, build one trust bundle (system CAs + proxy CA) and export it through the per-toolchain CA env vars — **fails closed** when the CA is missing/unusable. Default off. See [Egress control](#egress-control-optional)
-4. Hard gates — required binaries (`multica`, `gh`, `git`, `jq`, `curl`, `asdf`, `aws`, `aws-sso`), Multica auth, forge token **or** GitHub App / GHES credentials, and every harness named by `MULTICA_AGENT_CLI` (`cursor` → `cursor-agent` + `CURSOR_API_KEY`; `claude` → `claude` + an Anthropic credential)
+4. Hard gates — required binaries (`multica`, `gh`, `git`, `jq`, `curl`, `asdf`, `aws`, `aws-sso`), Multica auth, forge token **or** GitHub App / GHES credentials, and every harness named by `MULTICA_AGENT_CLI` (`cursor` → `cursor-agent` + `CURSOR_API_KEY`; `claude` → `claude` + an Anthropic credential). Harnesses it did **not** name are then masked out of the daemon/task `PATH`
 5. Configure git HTTPS credential helper; validate `MULTICA_LOG_LEVEL`; report AWS credential source
 6. `multica login` (token refresh) → **re-pin workspace** → daemon start --foreground
 
@@ -142,6 +142,20 @@ harnesses this container provisions and **hard-gates**:
   failure** (CrashLoop with an actionable message), never a silent fallback.
 - Harnesses **not** selected are ignored — a Claude-only deployment does not
   need `CURSOR_API_KEY`, and vice versa.
+- Their **binaries are masked** from the PATH the daemon — and therefore every
+  task it spawns — inherits. Both CLIs ship in the image, so without this a
+  Cursor-only deployment still has `claude` on `PATH` and reports a harness it
+  never configured. Masking is a boot-time `PATH` rewrite, not an uninstall:
+  the binary stays in the image, nothing is deleted, and changing
+  `MULTICA_AGENT_CLI` needs only a restart. It can never hide a *selected*
+  harness (the hard gate above still runs first and still decides Crashing).
+- `docker exec` / `kubectl exec` shells start from the **image** environment,
+  not the boot environment, so they still see the unmasked `PATH`. The mask
+  applies to the daemon and its tasks — check it there:
+
+  ```bash
+  docker exec <container> bash -c 'p=$(pgrep -f "multica daemon" | head -1); d=$(tr "\0" "\n" </proc/$p/environ | sed -n "s/^PATH=//p"); PATH=$d command -v claude || echo "claude masked"'
+  ```
 - The default stays `cursor`, so existing deployments keep their exact boot
   contract.
 - The harness used for a particular run is chosen on the **Multica agent

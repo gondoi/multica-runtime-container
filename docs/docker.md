@@ -42,6 +42,20 @@ Claude-only compose run (no Cursor key needed):
 MULTICA_AGENT_CLI=claude docker compose up -d --build
 ```
 
+Harnesses you did **not** select are masked from the PATH the daemon and its
+tasks inherit (both CLIs are installed in the image, so a Cursor-only
+deployment would otherwise still expose `claude`). Check it against the daemon
+environment — `docker compose exec` shells start from the image env instead:
+
+```bash
+# Cursor-only deployment: the daemon must not resolve claude
+docker compose exec runtime bash -c 'p=$(pgrep -f "multica daemon" | head -1); d=$(tr "\0" "\n" </proc/$p/environ | sed -n "s/^PATH=//p"); PATH=$d command -v claude || echo "claude masked"'
+```
+
+Masking is a boot-time PATH rewrite (no uninstall): restart with a different
+`MULTICA_AGENT_CLI` and the previous PATH is back. A selected harness is never
+masked, so its hard gate still decides on CrashLoop.
+
 ### Run with Compose (recommended)
 
 The repo ships a working [`docker-compose.yml`](../docker-compose.yml) at the

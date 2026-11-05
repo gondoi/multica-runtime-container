@@ -68,6 +68,17 @@ the pod provisions and hard-gates: `cursor`, `claude`, or `cursor,claude`. The
 harness used for a specific run is chosen on the Multica agent definition; this
 only guarantees the CLI is present and authenticated in the pod.
 
+Harnesses it does **not** name are masked from the PATH the daemon and its tasks
+inherit (both CLIs ship in the image). A selected harness is never masked, and
+the mask is a boot-time PATH rewrite — no image change, so updating the
+`MULTICA_AGENT_CLI` env value and restarting the pod is enough. `kubectl exec`
+shells start from the image env, so check the mask through the daemon:
+
+```bash
+kubectl -n multica-runtime exec deploy/multica-runtime -- bash -c \
+  'p=$(pgrep -f "multica daemon" | head -1); d=$(tr "\0" "\n" </proc/$p/environ | sed -n "s/^PATH=//p"); PATH=$d command -v claude || echo "claude masked"'
+```
+
 The `claude` Secret + volume are shipped **commented out** in `deployment.yaml`
 because a mounted-but-absent Secret (or a missing key in its `items` list) fails
 the pod mount. To run Claude Code:

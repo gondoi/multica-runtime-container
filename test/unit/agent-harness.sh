@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Unit check: bin/agent-harness.sh harness selection + boot gates
+# Unit check: bin/agent-harness.sh harness selection + boot gates + PATH mask
 # (cursor → cursor-agent + CURSOR_API_KEY; claude → claude + an Anthropic
-# credential). No Docker, no network, no real binaries: stub executables on a
-# throwaway PATH stand in for cursor-agent/claude.
+# credential; unselected harnesses → removed from PATH). No Docker, no network,
+# no real binaries: stub executables on a throwaway PATH stand in for
+# cursor-agent/claude.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -56,7 +57,8 @@ chmod +x "$WORK/probe-gate.sh"
 # run_gate <path-dir> [VAR=value ...] → probe output (stderr folded in)
 HARNESS_VARS=(-u MULTICA_AGENT_CLI -u CURSOR_API_KEY -u ANTHROPIC_API_KEY
   -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_AUTH_TOKEN
-  -u MULTICA_CURSOR_PATH -u MULTICA_CLAUDE_PATH -u DISABLE_AUTOUPDATER)
+  -u MULTICA_CURSOR_PATH -u MULTICA_CLAUDE_PATH -u DISABLE_AUTOUPDATER
+  -u MULTICA_HARNESS_MASK_DIR)
 
 run_gate() {
   # Caller-supplied VAR=value pairs land after the -u scrub, so each case starts
@@ -212,6 +214,142 @@ if printf '%s' "$out" | grep -qi 'sk-ant-test'; then
   bad "gate output leaked a credential value"
 else
   ok "gate output never echoes credential values"
+fi
+
+# ── PATH mask: unselected harness binaries leave PATH ────────────────────
+# The image ships both CLIs, so a Cursor-only deployment must not be able to
+# resolve `claude` from the daemon/task PATH (and vice versa). Stubs below model
+# the image layout, including /usr/local/bin/agent → cursor-agent.
+mkdir -p "$WORK/aliased" "$WORK/agent-other" "$WORK/two-a" "$WORK/two-b"
+cp "$WORK/full/claude" "$WORK/aliased/claude"
+cp "$WORK/full/cursor-agent" "$WORK/aliased/cursor-agent"
+ln -sf "$WORK/aliased/cursor-agent" "$WORK/aliased/agent"
+chmod +x "$WORK/aliased/claude" "$WORK/aliased/cursor-agent"
+# `agent` here is an unrelated tool (different real file) — must stay visible.
+printf '#!/bin/sh\necho unrelated-agent\n' >"$WORK/agent-other/agent"
+cp "$WORK/aliased/claude" "$WORK/agent-other/claude"
+chmod +x "$WORK/agent-other/agent" "$WORK/agent-other/claude"
+cp "$WORK/full/cursor-agent" "$WORK/two-a/cursor-agent"
+cp "$WORK/full/claude" "$WORK/two-b/claude"
+chmod +x "$WORK/two-a/cursor-agent" "$WORK/two-b/claude"
+
+cat >"$WORK/probe-mask.sh" <<'PROBE'
+#!/usr/bin/env bash
+set -euo pipefail
+# shellcheck disable=SC1090
+source "$LIB"
+for _ in $(seq 1 "${MASK_RUNS:-1}"); do
+  harness_mask_unselected
+  printf 'path=%s\n' "$PATH"
+  for b in claude cursor-agent agent; do
+    if p="$(command -v "$b" 2>/dev/null)"; then
+      printf 'bin_%s=%s\n' "$b" "$p"
+    else
+      printf 'bin_%s=MASKED\n' "$b"
+    fi
+  done
+done
+PROBE
+chmod +x "$WORK/probe-mask.sh"
+
+# mask_path <path-dir> [VAR=value ...] → probe output (stderr folded in)
+mask_path() {
+  local pathdir="$1"
+  shift
+  env "${HARNESS_VARS[@]}" PATH="$pathdir:$BASE_PATH" LIB="$LIB" \
+    MULTICA_HARNESS_MASK_DIR="${MASK_DIR_OVERRIDE:-$WORK/mask}" "$@" \
+    "$WORK/probe-mask.sh" 2>&1
+}
+
+masked_bin() { printf '%s\n' "$1" | sed -n "s/^bin_$2=//p" | head -1; }
+masked_path() { printf '%s\n' "$1" | sed -n 's/^path=//p' | head -1; }
+
+out="$(mask_path "$WORK/full" MULTICA_AGENT_CLI=cursor CURSOR_API_KEY=cursor_test)"
+if [ "$(masked_bin "$out" claude)" = "MASKED" ] \
+  && [ -n "$(masked_bin "$out" cursor-agent)" ] \
+  && printf '%s' "$(masked_path "$out")" | grep -q "$WORK/mask/entry-" \
+  && ! printf '%s' "$(masked_path "$out")" | grep -qF "$WORK/full"; then
+  ok "cursor selected → claude masked, cursor-agent resolvable (PATH rewritten)"
+else
+  bad "cursor selected did not mask claude / keep cursor-agent: $out"
+fi
+
+# The masked PATH must still execute the selected harness (symlink mirror, not
+# a stub that breaks argv/exec).
+if [ "$(env -i PATH="$(masked_path "$out")" cursor-agent 2>/dev/null)" = "stub-cursor-agent" ]; then
+  ok "masked PATH still executes the selected cursor-agent binary"
+else
+  bad "selected cursor-agent does not run through the masked PATH"
+fi
+
+out="$(mask_path "$WORK/aliased" MULTICA_AGENT_CLI=claude ANTHROPIC_API_KEY=sk-ant-test)"
+if [ "$(masked_bin "$out" cursor-agent)" = "MASKED" ] \
+  && [ "$(masked_bin "$out" agent)" = "MASKED" ] \
+  && [ -n "$(masked_bin "$out" claude)" ] \
+  && [ "$(env -i PATH="$(masked_path "$out")" claude 2>/dev/null)" = "stub-claude" ]; then
+  ok "claude selected → cursor-agent + its 'agent' alias masked, claude still runs"
+else
+  bad "claude selected did not mask cursor-agent/agent or broke claude: $out"
+fi
+
+out="$(mask_path "$WORK/aliased" MULTICA_AGENT_CLI=cursor,claude)"
+if [ "$(masked_path "$out")" = "$WORK/aliased:$BASE_PATH" ] \
+  && ! printf '%s' "$out" | grep -q '=MASKED'; then
+  ok "both harnesses selected → mask is a no-op (PATH untouched)"
+else
+  bad "both-selected boot changed PATH: $out"
+fi
+
+out="$(mask_path "$WORK/agent-other:$WORK/full" MULTICA_AGENT_CLI=claude ANTHROPIC_API_KEY=sk-ant-test)"
+if [ "$(masked_bin "$out" agent)" = "$WORK/agent-other/agent" ] \
+  && [ "$(masked_bin "$out" cursor-agent)" = "MASKED" ]; then
+  ok "unrelated 'agent' binary not masked (alias match is by real file)"
+else
+  bad "mask treated an unrelated 'agent' binary as the Cursor alias: $out"
+fi
+
+out="$(mask_path "$WORK/two-a:$WORK/two-b" MULTICA_AGENT_CLI=claude ANTHROPIC_API_KEY=sk-ant-test)"
+if [ "$(masked_bin "$out" cursor-agent)" = "MASKED" ] \
+  && [ "$(masked_bin "$out" claude)" = "$WORK/two-b/claude" ] \
+  && printf '%s' "$(masked_path "$out")" | grep -qF "$WORK/two-b"; then
+  ok "masked binary removed from its PATH entry only (other entries verbatim)"
+else
+  bad "mask rewrote PATH entries it should not have: $out"
+fi
+
+out="$(mask_path "$WORK/full" MULTICA_AGENT_CLI=cursor CURSOR_API_KEY=cursor_test MASK_RUNS=2)"
+mask_paths="$(printf '%s\n' "$out" | sed -n 's/^path=//p')"
+if [ "$(printf '%s\n' "$mask_paths" | wc -l)" = 2 ] \
+  && [ "$(printf '%s\n' "$mask_paths" | sort -u | wc -l)" = 1 ] \
+  && [ "$(printf '%s\n' "$out" | grep -c '^bin_claude=MASKED$')" = 2 ]; then
+  ok "mask is idempotent (second run leaves the same PATH, claude still masked)"
+else
+  bad "mask is not idempotent: mask_paths='$mask_paths'"
+fi
+
+out="$(mask_path "$WORK/cursor-only" MULTICA_AGENT_CLI=cursor CURSOR_API_KEY=cursor_test)"
+if [ "$(masked_path "$out")" = "$WORK/cursor-only:$BASE_PATH" ] \
+  && printf '%s' "$out" | grep -q 'nothing to mask'; then
+  ok "harness not installed → nothing to mask, PATH unchanged"
+else
+  bad "mask changed PATH although no unselected binary is installed: $out"
+fi
+
+out="$(MASK_DIR_OVERRIDE=/proc/definitely-not-writable mask_path "$WORK/full" \
+  MULTICA_AGENT_CLI=cursor CURSOR_API_KEY=cursor_test)"
+if [ "$(masked_path "$out")" = "$WORK/full:$BASE_PATH" ] \
+  && printf '%s' "$out" | grep -q 'mask dir .* is not writable'; then
+  ok "unwritable mask dir → WARN + PATH unchanged (masking never breaks boot)"
+else
+  bad "unwritable mask dir did not degrade to a warning: $out"
+fi
+
+out="$(mask_path "$WORK/full" MULTICA_AGENT_CLI=gemini)"
+if printf '%s' "$out" | grep -q 'mask skipped' \
+  && [ "$(masked_path "$out")" = "$WORK/full:$BASE_PATH" ]; then
+  ok "unparseable MULTICA_AGENT_CLI → mask skipped (gate already failed the boot)"
+else
+  bad "invalid selection did not skip masking cleanly: $out"
 fi
 
 echo

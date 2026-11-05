@@ -10,6 +10,8 @@
 #   - Secret-projected Multica home + Cursor/git file mounts (K8s parity)
 #   - Agent CLI harness gate: cursor (default) and claude (Secret-projected
 #     credential, binary usable as the non-root user, env reaching the daemon)
+#   - Harness PATH mask: harnesses MULTICA_AGENT_CLI did not select are
+#     unresolvable in the daemon/task PATH (BOX-112)
 #   - login workspace_id clobber → re-pin from Secret / MULTICA_WORKSPACE slug
 #   - AWS ConfigMap mounts → PVC provider homes; operator-only login guard
 #   - optional egress control: iron-proxy MITM CA trusted + fail-closed when the
@@ -44,6 +46,7 @@ cname_machine=""
 cname_nolog=""
 cname_wedged=""
 cname_egress=""
+cname_both=""
 
 ok() { printf 'PASS  %s\n' "$*"; pass=$((pass + 1)); }
 bad() { printf 'FAIL  %s\n' "$*"; fail=$((fail + 1)); }
@@ -60,6 +63,7 @@ cleanup() {
   [ -n "$cname_nolog" ] && docker rm -f "$cname_nolog" >/dev/null 2>&1 || true
   [ -n "$cname_wedged" ] && docker rm -f "$cname_wedged" >/dev/null 2>&1 || true
   [ -n "$cname_egress" ] && docker rm -f "$cname_egress" >/dev/null 2>&1 || true
+  [ -n "$cname_both" ] && docker rm -f "$cname_both" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -104,6 +108,26 @@ run_crash() {
     sed -n '1,40p' /tmp/multica-boot-crash."$name".out || true
   fi
 }
+
+daemon_env_path() {
+  # PATH as the daemon (and every task it spawns) sees it. `docker exec` starts
+  # from the *image* env, not the boot env, so a boot-time PATH rewrite (harness
+  # mask) is only observable here. The stub daemon is `sleep infinity`.
+  local cname="$1" pid
+  pid="$(docker exec "$cname" pgrep -f 'sleep infinity' 2>/dev/null | head -1 || true)"
+  [ -n "$pid" ] || return 1
+  docker exec "$cname" bash -c "tr '\\0' '\\n' < /proc/${pid}/environ | sed -n 's/^PATH=//p'" 2>/dev/null | head -1
+}
+
+daemon_command_v() {
+  # daemon_command_v <container> <binary> → resolved path, non-zero when masked.
+  local cname="$1" bin="$2" dpath
+  dpath="$(daemon_env_path "$cname")" || return 1
+  [ -n "$dpath" ] || return 1
+  docker exec "$cname" bash -c "PATH='${dpath}'; export PATH; command -v '${bin}'" 2>/dev/null
+}
+
+daemon_has_bin() { daemon_command_v "$1" "$2" >/dev/null 2>&1; }
 
 assert_ready_container() {
   local cname="$1" label="$2"
@@ -484,6 +508,72 @@ if docker logs "$cname_claude" 2>&1 | grep -q 'sk-ant-boot_seam_claude_fixture';
   bad "claude credential leaked into the boot log"
 else
   ok "claude credential never appears in container logs"
+fi
+
+echo "==> Harness PATH mask — unselected harnesses leave the daemon/task PATH"
+# BOX-112: the image ships cursor-agent *and* claude, so a deployment that
+# selected only one must not find the other on the PATH the daemon (and every
+# task it spawns) inherits. Asserted against the daemon env: `docker exec`
+# shells inherit the image env, where both binaries stay installed.
+proj_daemon_path="$(daemon_env_path "$cname_proj" || true)"
+if [ -n "$proj_daemon_path" ] && daemon_has_bin "$cname_proj" cursor-agent \
+  && ! daemon_has_bin "$cname_proj" claude; then
+  ok "cursor-only daemon PATH: cursor-agent resolvable, claude masked"
+else
+  bad "cursor-only daemon PATH still exposes claude (PATH='${proj_daemon_path}')"
+fi
+if printf '%s' "${proj_daemon_path:-}" | grep -q 'multica-harness-mask/entry-'; then
+  ok "cursor-only daemon PATH points at the boot-time harness mask mirror"
+else
+  bad "cursor-only daemon PATH was not rewritten (PATH='${proj_daemon_path}')"
+fi
+if [ -n "$proj_daemon_path" ] \
+  && docker exec "$cname_proj" bash -c "PATH='${proj_daemon_path}'; export PATH; cursor-agent --version" >/dev/null 2>&1; then
+  ok "selected cursor-agent still runs through the masked daemon PATH"
+else
+  bad "cursor-agent does not run through the masked daemon PATH"
+fi
+
+claude_daemon_path="$(daemon_env_path "$cname_claude" || true)"
+if [ -n "$claude_daemon_path" ] && daemon_has_bin "$cname_claude" claude \
+  && ! daemon_has_bin "$cname_claude" cursor-agent \
+  && ! daemon_has_bin "$cname_claude" agent; then
+  ok "claude-only daemon PATH: claude resolvable, cursor-agent + 'agent' alias masked"
+else
+  bad "claude-only daemon PATH still exposes cursor-agent/agent (PATH='${claude_daemon_path}')"
+fi
+if [ -n "$claude_daemon_path" ] \
+  && docker exec "$cname_claude" bash -c "PATH='${claude_daemon_path}'; export PATH; claude --version" >/dev/null 2>&1; then
+  ok "claude still runs through the masked daemon PATH"
+else
+  bad "claude does not run through the masked daemon PATH"
+fi
+
+# Injection guard: masking must never disturb a selected harness's hard gate.
+# crash-no-claude-auth.env selects claude without an Anthropic credential and
+# still has to CrashLoop (run above), and the claude-only boot reached Ready.
+if wait_log "$cname_claude" 'harness claude: ok' \
+  && ! docker logs "$cname_claude" 2>&1 | grep -q 'required binary not on PATH: claude'; then
+  ok "selected-harness gate unaffected by the mask (binary still gated as before)"
+else
+  bad "masking interfered with the selected-harness binary gate"
+  docker logs "$cname_claude" >&2 || true
+fi
+
+echo "==> Happy path — both harnesses selected (mask is a no-op)"
+cname_both="multica-boot-seam-both-$$"
+docker run -d --name "$cname_both" \
+  --env-file "$FIX/happy-both.env" \
+  -v "$STUB:/usr/local/bin/multica:ro" \
+  "$IMAGE" >/dev/null
+assert_ready_container "$cname_both" "happy/both-harnesses Ready"
+both_daemon_path="$(daemon_env_path "$cname_both" || true)"
+if [ -n "$both_daemon_path" ] && daemon_has_bin "$cname_both" cursor-agent \
+  && daemon_has_bin "$cname_both" claude \
+  && ! printf '%s' "$both_daemon_path" | grep -q 'multica-harness-mask'; then
+  ok "cursor,claude daemon PATH: both resolvable, no mask mirror (mask is a no-op)"
+else
+  bad "both-selected boot masked a selected harness (PATH='${both_daemon_path}')"
 fi
 
 # Without AWS mounts, daemon still Ready (continue-on-degrade).

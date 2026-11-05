@@ -7,7 +7,8 @@
 #   2b. Optional egress control (iron-proxy): trust its MITM CA, fail closed
 #   2c. Daemon log level (collection-side filter)
 #   3. Hard-fail gates (required binaries + Multica/git-auth secrets, plus the
-#      agent CLI harness(es) named by MULTICA_AGENT_CLI)
+#      agent CLI harness(es) named by MULTICA_AGENT_CLI). Harnesses NOT named by
+#      MULTICA_AGENT_CLI are masked out of the daemon/task PATH afterwards.
 #   4. Configure git HTTPS credential helper
 #   4b. Validate MULTICA_LOG_LEVEL + export it (log-stream filter, see below)
 #   4c. Report the resolved AWS credential source (informational; no creds)
@@ -150,6 +151,12 @@ require_bin grep
 # shellcheck disable=SC1091
 source /usr/local/bin/agent-harness.sh
 harness_gate || die "agent CLI harness gate failed (MULTICA_AGENT_CLI='${MULTICA_AGENT_CLI:-cursor}')"
+# Hide the binaries of harnesses that were NOT selected from the PATH the daemon
+# and every task inherit (the image ships both cursor-agent and claude, so a
+# Cursor-only deployment would otherwise advertise Claude). PATH-only and
+# stateless; never fatal and never masks a selected harness — see
+# agent-harness.sh "Masking unselected harnesses from PATH".
+harness_mask_unselected
 
 [ -f "${MULTICA_HOME:-$HOME/.multica}/daemon.id" ] || [ -n "${MULTICA_DAEMON_ID:-}" ] \
   || die "daemon.id required: project under ${MULTICA_HOME_SECRET_DIR:-/run/secrets/multica-home} or set MULTICA_DAEMON_ID"

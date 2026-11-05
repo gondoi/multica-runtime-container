@@ -22,8 +22,12 @@
 #
 # Every selected harness is a HARD boot gate: missing binary or missing
 # credential → non-zero exit → CrashLoop, exactly like the old Cursor-only gate.
-# Harnesses *not* selected are ignored (their binaries may still ship in the
-# image; the daemon simply cannot run tasks for them without credentials).
+# Harnesses *not* selected are ignored by the gate, and after the gate passes
+# their binaries are *masked* out of the PATH the daemon (and every task it
+# spawns) inherits — see "Masking unselected harnesses from PATH" below. The
+# image ships cursor-agent and claude unconditionally, so masking is what keeps
+# a Cursor-only deployment from advertising a Claude harness it never
+# configured.
 #
 # Note: MULTICA_AGENT_CLI is this container's provision/gate selector, not the
 # daemon's per-run harness switch — the harness for a given run comes from the
@@ -169,6 +173,185 @@ harness_gate() {
 
   harness_export_env "${selected[@]}"
   harness_log "agent harnesses: ${selected[*]}"
+  return 0
+}
+
+# ── Masking unselected harnesses from PATH ────────────────────────────────
+# Both agent CLIs ship in the image, so a Cursor-only deployment still has
+# `claude` on PATH; that is the surface that makes Multica advertise a harness
+# the deployment never configured. After the gate above passes, every harness
+# MULTICA_AGENT_CLI did not select is removed from the PATH exported to the
+# daemon (and therefore to every task it spawns).
+#
+# Mechanism: PATH rewrite. Deleting /usr/local/bin/<cli> is not available at
+# boot — the runtime user is uid 10001 (non-root) and /usr/local/bin is
+# root-owned — so every PATH entry that actually holds a masked binary is
+# replaced by a per-boot directory of symlinks to the rest of that entry's
+# contents. Entries that hold nothing to mask are kept verbatim, and the image's
+# directories are never modified, so this is stateless and reversible: restart
+# with a different MULTICA_AGENT_CLI and the previous PATH comes back.
+#
+# Scope: the entrypoint's exported PATH → daemon + every task it spawns.
+# `docker exec` / `kubectl exec` inherit the *image* env, not the boot env, so an
+# operator shell still sees the unmasked image PATH; read the daemon's
+# /proc/<pid>/environ to observe the mask.
+#
+# Masking is PATH hygiene, not an auth gate: when it cannot be applied the boot
+# continues with a WARN, and a selected harness is never masked (so the hard
+# gate's verdict is never contradicted).
+
+# Where the per-boot mirror directories live (override for tests).
+harness_mask_dir() { printf '%s\n' "${MULTICA_HARNESS_MASK_DIR:-${TMPDIR:-/tmp}/multica-harness-mask}"; }
+
+# Other executable names that resolve to a harness's binary in this image
+# (`/usr/local/bin/agent` → cursor-agent).
+harness_bin_aliases() {
+  case "${1:-}" in
+    cursor) printf 'agent\n' ;;
+    *) : ;;
+  esac
+}
+
+# Resolve an executable name to the real file it points at (PATH hits are often
+# symlinks: /usr/local/bin/agent → cursor-agent).
+harness_resolve_path() {
+  local p
+  p="$(command -v "${1:-}" 2>/dev/null || true)"
+  [ -n "$p" ] || return 0
+  readlink -f -- "$p" 2>/dev/null || printf '%s\n' "$p"
+}
+
+# Binary names that must leave PATH, one per line: each unselected harness's
+# binary, plus any alias that currently resolves to that *same* binary (so an
+# unrelated `agent` from another toolchain is never masked).
+harness_masked_names() {
+  local -a selected=("$@")
+  local sel=" ${selected[*]} "
+  local h name alias target hit
+  while read -r h; do
+    [ -n "$h" ] || continue
+    case "$sel" in *" $h "*) continue ;; esac
+    name="$(harness_bin_name "$h")" || continue
+    printf '%s\n' "$name"
+    target="$(harness_resolve_path "$name")"
+    [ -n "$target" ] || continue
+    for alias in $(harness_bin_aliases "$h"); do
+      hit="$(harness_resolve_path "$alias")"
+      if [ -n "$hit" ] && [ "$hit" = "$target" ]; then
+        printf '%s\n' "$alias"
+      fi
+    done
+  done < <(harness_known)
+}
+
+# Does <dir> hold any of the space-separated names in <names>?
+harness_dir_has_masked() {
+  local dir="$1" names="$2" name
+  for name in $names; do
+    if [ -e "$dir/$name" ] || [ -L "$dir/$name" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Rewrite PATH so the given binary names are unresolvable. <selected...> are the
+# harnesses that keep their binaries.
+harness_mask_path() {
+  local -a selected=("$@")
+  local -a dirs=()
+  local original="$PATH" names names_csv mask_root name
+  local dir dest entry base n=0 new_path="" seen=" " still_there=""
+
+  names="$(harness_masked_names "${selected[@]}" || true)"
+  if [ -z "$names" ]; then
+    harness_log "harness PATH mask: every provisioned harness is selected (${selected[*]}); PATH unchanged"
+    return 0
+  fi
+  names_csv="$(printf '%s' "$names" | tr '\n' ' ')"
+  names_csv="${names_csv% }"
+
+  mask_root="$(harness_mask_dir)"
+  if ! mkdir -p "$mask_root" 2>/dev/null || [ ! -w "$mask_root" ]; then
+    harness_log "WARN: harness PATH mask skipped: mask dir '$mask_root' is not writable; unselected harness binaries (${names_csv// /, }) stay on the daemon PATH"
+    return 0
+  fi
+
+  IFS=':' read -r -a dirs <<<"$original"
+  for dir in "${dirs[@]}"; do
+    # Preserve empty PATH entries (they mean "current directory") and entries
+    # that are not readable directories: only a directory that actually holds a
+    # masked binary is rewritten.
+    if [ -z "$dir" ]; then
+      new_path="${new_path:+$new_path:}"
+      continue
+    fi
+    # A duplicate PATH entry changes nothing about lookup order; keep the first.
+    case "$seen" in *"|$dir|"*) continue ;; esac
+    seen="$seen|$dir|"
+
+    if [ ! -d "$dir" ] || ! harness_dir_has_masked "$dir" "$names_csv"; then
+      new_path="${new_path:+$new_path:}$dir"
+      continue
+    fi
+
+    n=$((n + 1))
+    dest="$mask_root/entry-$n"
+    rm -rf "$dest"
+    if ! mkdir -p "$dest"; then
+      harness_log "WARN: harness PATH mask: cannot create '$dest'; keeping '$dir' on PATH"
+      new_path="${new_path:+$new_path:}$dir"
+      continue
+    fi
+    # Mirror every non-masked entry as a symlink (a symlink resolves to the same
+    # inode, so permissions/ownership/argv[0] all behave exactly as before).
+    if ! (
+      shopt -s nullglob dotglob
+      for entry in "$dir"/*; do
+        base="${entry##*/}"
+        case " $names_csv " in *" $base "*) continue ;; esac
+        ln -s "$entry" "$dest/$base" || exit 1
+      done
+    ); then
+      harness_log "WARN: harness PATH mask: cannot mirror '$dir' into '$dest'; keeping it on PATH"
+      new_path="${new_path:+$new_path:}$dir"
+      continue
+    fi
+    new_path="${new_path:+$new_path:}$dest"
+  done
+
+  if [ "$new_path" = "$original" ]; then
+    harness_log "harness PATH mask: nothing to mask (${names_csv// /, } not on PATH); PATH unchanged"
+    return 0
+  fi
+
+  export PATH="$new_path"
+
+  # Never claim a mask that did not happen: verify each name is really gone.
+  for name in $names_csv; do
+    if command -v "$name" >/dev/null 2>&1; then
+      still_there="${still_there:+$still_there, }$name"
+    fi
+  done
+  if [ -n "$still_there" ]; then
+    harness_log "WARN: harness PATH mask incomplete — still resolvable: $still_there"
+  else
+    harness_log "harness PATH mask: ${names_csv// /, } removed from the daemon/task PATH (selected: ${selected[*]}; mirrors in $mask_root)"
+  fi
+  return 0
+}
+
+# Mask every harness MULTICA_AGENT_CLI did not select. Called by entrypoint.sh
+# after harness_gate; never fatal and never touches a selected harness.
+harness_mask_unselected() {
+  local out
+  local -a selected=()
+  if ! out="$(harness_selected)" || [ -z "$out" ]; then
+    harness_log "WARN: harness PATH mask skipped: MULTICA_AGENT_CLI could not be parsed"
+    return 0
+  fi
+  mapfile -t selected <<<"$out"
+  harness_mask_path "${selected[@]}" || true
   return 0
 }
 
