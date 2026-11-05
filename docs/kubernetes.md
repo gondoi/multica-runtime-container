@@ -55,6 +55,9 @@ kubectl -n multica-runtime logs deploy/multica-runtime -f
 The Deployment wires `startupProbe` / `livenessProbe` / `readinessProbe` to
 the same `/usr/local/bin/ready.sh` used by the Compose healthcheck — pods go
 Ready once the daemon is up past the hard gates (required binaries + secrets).
+`ready.sh` gates on the daemon's reported `status` (`running` / `starting`), not
+on the `daemon status` exit code — that exit code is `0` even when no daemon is
+running, so checking it alone reports Ready forever.
 The **first** task run against the pod may cold-clone its repo; that is
 expected and is not part of the Ready gate.
 

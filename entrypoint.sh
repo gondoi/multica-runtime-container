@@ -292,12 +292,13 @@ log "gates passed; starting daemon (id=${MULTICA_DAEMON_ID} machine=${MULTICA_MA
 
 # Ready = this process stays up. No ConfigMap inventory clone-all step.
 #
-# The daemon writes its real operational log (task/run activity, not just
-# the boot banner) to $MULTICA_HOME/daemon.log regardless of --foreground;
-# `exec`-ing the daemon directly only surfaces whatever it prints on its
-# own stdout/stderr to `docker logs` / `kubectl logs`. Run it as a child and
-# stream `multica daemon logs --follow` as the container's foreground
-# process so task activity is visible without shelling in to tail files.
+# The daemon's real operational log (task/run activity, not just the boot
+# banner) lands in $MULTICA_HOME/daemon.log whenever the process has no
+# terminal on stderr — CLI 0.8.0 runDaemonForeground picks its sink that way
+# (TTY → its own stderr, non-TTY → the rotating daemon.log) — which is the
+# case in every container. Run it as a child and stream
+# `multica daemon logs --follow` as the container's foreground process so task
+# activity is visible without shelling in to tail files.
 daemon_args=(
   --foreground
   --daemon-id "$MULTICA_DAEMON_ID"
@@ -318,22 +319,78 @@ DAEMON_PID=$!
 forward_term() { kill -TERM "$DAEMON_PID" 2>/dev/null || true; }
 trap forward_term TERM INT
 
-# Wait for the daemon to come up before attaching the log follower.
+# Wait for the daemon to actually come up before attaching the log follower.
+#
+# `multica daemon status` is a *report*, not an assertion: it prints
+# {"status":"stopped"} and still exits 0 when no daemon is running (CLI
+# 0.8.0 runDaemonStatus), so testing its exit code passes on the very first
+# iteration and waits for nothing. Gate on the status field instead;
+# "starting" means the health port answered but preflight is still in flight.
+# Bounded, and never fatal while the daemon process itself is alive.
+daemon_state="unknown"
 for _ in $(seq 1 50); do
-  multica daemon status >/dev/null 2>&1 && break
+  kill -0 "$DAEMON_PID" 2>/dev/null || die "daemon exited during startup"
+  status_json="$(multica daemon status --output json 2>/dev/null || true)"
+  if [ -n "$status_json" ]; then
+    daemon_state="$(printf '%s' "$status_json" | jq -r '.status // "unknown"' 2>/dev/null || printf 'unknown')"
+    if [ "$daemon_state" = "running" ]; then
+      break
+    fi
+  fi
+  sleep 0.2
+done
+
+if [ "$daemon_state" = "running" ]; then
+  log "daemon up; streaming daemon logs to container stdout (level=$MULTICA_LOG_LEVEL)"
+else
+  log "WARN: daemon has not reported status=running after 10s (last state '${daemon_state}') — supervising it anyway; the log stream attaches once ${MULTICA_HOME}/daemon.log exists"
+fi
+
+# `multica daemon logs` stats the file first and hard-fails when it is absent
+# ("no log file found … may not have been started in background mode"), and the
+# file only appears once the daemon has emitted its first record — after auth /
+# preflight, i.e. later than the container's first status answer. Wait for it
+# (bounded) rather than racing it. A daemon that *does* have a TTY on stderr
+# never writes the file at all; then the stream is simply unavailable and boot
+# continues, because this container exists to keep the daemon alive, not a tail.
+daemon_log="${MULTICA_HOME}/daemon.log"
+for _ in $(seq 1 25); do
+  if [ -f "$daemon_log" ]; then
+    break
+  fi
   kill -0 "$DAEMON_PID" 2>/dev/null || die "daemon exited during startup"
   sleep 0.2
 done
 
-log "daemon up; streaming daemon logs to container stdout (level=$MULTICA_LOG_LEVEL)"
-multica daemon logs --follow 2>&1 | /usr/local/bin/log-level-filter.sh "$MULTICA_LOG_LEVEL" &
-LOGS_PID=$!
+LOGS_PID=""
+if [ -f "$daemon_log" ]; then
+  multica daemon logs --follow 2>&1 | /usr/local/bin/log-level-filter.sh "$MULTICA_LOG_LEVEL" &
+  LOGS_PID=$!
+  # Report a dead stream without taking a healthy daemon down with it (the
+  # BOX-94 CrashLoop: the follower's non-zero exit used to be the container's
+  # exit, so any log-stream mishap looked like a daemon crash).
+  (
+    while kill -0 "$DAEMON_PID" 2>/dev/null; do
+      if ! kill -0 "$LOGS_PID" 2>/dev/null; then
+        log "WARN: daemon log follower exited; container stdout no longer mirrors ${daemon_log} (daemon itself is still supervised)"
+        break
+      fi
+      sleep 5
+    done
+  ) &
+else
+  log "WARN: no daemon log at ${daemon_log} after 5s (a daemon attached to a TTY keeps its records on that terminal) — container stdout carries boot output only; MULTICA_LOG_LEVEL=${MULTICA_LOG_LEVEL} filtering is not applied"
+fi
 
-# Exit (CrashLoop in K8s if unexpected) the moment either the daemon or the
-# log follower dies, so a crashed daemon isn't masked by a still-running tail.
+# The daemon's exit is the container's exit. Exit (CrashLoop in K8s if
+# unexpected) when it dies so a crashed daemon is never masked by a still-live
+# tail.
 set +e
-wait -n "$DAEMON_PID" "$LOGS_PID"
+wait "$DAEMON_PID"
 exit_code=$?
 set -e
-kill "$DAEMON_PID" "$LOGS_PID" 2>/dev/null || true
+kill "$DAEMON_PID" 2>/dev/null || true
+if [ -n "$LOGS_PID" ]; then
+  kill "$LOGS_PID" 2>/dev/null || true
+fi
 exit "$exit_code"

@@ -440,6 +440,21 @@ Consequences worth knowing:
   feature. Once the CLI supports it, this filter becomes a pass-through and can
   be dropped.
 
+### Log streaming and readiness (CLI 0.8.0 quirks)
+
+Two behaviours of the pinned CLI shape this boot contract, and both once cost a
+`CrashLoopBackOff` on a healthy daemon (BOX-94):
+
+| CLI behaviour | What boot does about it |
+| --- | --- |
+| `multica daemon status` exits **0 whether or not a daemon is running** — it reports `{"status":"…"}` in the payload (`runDaemonStatus`) | Boot and `ready.sh` read the `status` field (`running` / `starting`), never the exit code; the log stream is only attached once the daemon reports `running` |
+| `multica daemon logs` **hard-fails** (`no log file found … may not have been started in background mode`) when `daemon.log` is absent, and only a daemon **without a TTY on stderr** writes that file (`runDaemonForeground`) | Boot waits (bounded) for `daemon.log` before attaching `--follow`. If it never appears, boot warns and keeps supervising the daemon — the daemon's own stderr is the log then |
+
+Streaming is **best-effort by design**: the container's exit code is the
+daemon's exit code. A log follower that dies (missing `daemon.log`, `tail`
+missing, rotation trouble) logs a `WARN` and never takes the container down,
+because a log-stream failure is not a daemon failure.
+
 ## Design notes
 
 - Repos are **not** cloned at image build or at container start. Register them in Multica workspace/project metadata; materialize with `multica repo checkout` during tasks (first task may cold-clone).
