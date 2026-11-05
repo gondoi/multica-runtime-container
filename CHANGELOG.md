@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/gondoi/multica-runtime-container/compare/v0.3.0...v0.4.0) (2026-11-05)
+
+
+### Features
+
+* **harness:** mask unselected harness binaries from the daemon PATH ([c00aaca](https://github.com/gondoi/multica-runtime-container/commit/c00aaca7232f92e54c307c50bb53db40263b95f2))
+
 ## [0.3.0](https://github.com/gondoi/multica-runtime-container/compare/v0.2.0...v0.3.0) (2026-11-05)
 
 
