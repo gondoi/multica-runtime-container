@@ -139,6 +139,18 @@ kubectl -n multica-runtime exec -it deploy/multica-runtime -- \
   env AWS_SSO_OPERATOR_LOGIN=1 aws-sso login --url-action=print
 ```
 
+### Egress control (not provided yet)
+
+`MULTICA_EGRESS_PROXY` / `MULTICA_EGRESS_PROXY_CA` work identically in a pod —
+set them plus a read-only mount of the proxy's `ca.crt` — but **no Kubernetes
+manifest for an egress proxy ships here yet.** The two cluster-side decisions
+that make or break it (the address iron-proxy answers DNS queries with, and the
+`dnsConfig` + NetworkPolicy that force pods through it) depend on the cluster,
+not on this image, so they are a separate follow-up. iron-proxy does publish a
+Helm chart upstream. See [`docs/egress-control.md`](../egress-control.md).
+Do **not** set `MULTICA_EGRESS_PROXY` without wiring `dnsConfig` at the proxy:
+TLS would fail closed for every request (by design).
+
 ### Tear down
 
 ```bash

@@ -171,6 +171,22 @@ docker compose exec -e AWS_SSO_OPERATOR_LOGIN=1 runtime \
 Agents must not run `aws-sso login` (guard exits non-zero without
 `AWS_SSO_OPERATOR_LOGIN=1`). SSO cache persists on the workspaces volume.
 
+### Optional egress control (iron-proxy)
+
+Default-deny egress through a MITM sidecar is available but **off by default**.
+The container half is small: `MULTICA_EGRESS_PROXY=iron-proxy`
++ `MULTICA_EGRESS_PROXY_CA=<ca.crt>` makes boot trust the proxy CA and fail
+closed without it; the routing and the allowlist live in the deployment.
+
+```bash
+./examples/iron-proxy/gen-ca.sh
+# then lay out secrets/ as above and:
+docker compose -f examples/iron-proxy/docker-compose.yml up -d --build
+```
+
+Worked example, verify steps and rollback: [`examples/iron-proxy/`](../examples/iron-proxy/).
+Evaluation and what is deliberately not enabled: [`docs/egress-control.md`](egress-control.md).
+
 ### Boot seam tests
 
 Fixture-driven Ready-vs-Crash checks (stub `multica`, no live cloud needed):
@@ -183,4 +199,11 @@ Fast unit suites (auth-tier precedence, App token mint; no Docker/network):
 
 ```bash
 ./test/unit/run-unit.sh
+```
+
+Opt-in integration check for the egress-proxy example (Docker + internet; pulls
+the upstream proxy image, so it is not part of CI):
+
+```bash
+./test/integration/egress-proxy.sh
 ```

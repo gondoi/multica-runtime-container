@@ -5,6 +5,8 @@
 /secrets/
 *.pem
 *.key
+# Generated MITM CA for the optional iron-proxy example (ca.key is secret).
+/examples/iron-proxy/certs/
 .DS_Store
 .idea/
 .vscode/

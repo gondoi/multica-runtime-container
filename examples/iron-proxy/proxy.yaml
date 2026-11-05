@@ -1,0 +1,102 @@
+# iron-proxy config for the multica-runtime container (sidecar example).
+#
+# Default-deny: a request is allowed ONLY when its host matches a glob below (or
+# its address matches an allowed CIDR). Everything else is rejected with 403 and
+# recorded as a WARN audit entry in the proxy log.
+#
+# THIS LIST IS A STARTING POINT, NOT A POLICY. It covers the egress this image's
+# own boot + harnesses are known to need; every deployment has more (your git
+# host, MCP servers, package registries, cloud APIs). Roll out in observe mode
+# first — uncomment `warn: true` — run a representative task per harness, then
+# move what the audit log shows into this list. Allowlist maintenance is ongoing:
+# a new tool that talks to a new host fails until its host is added.
+#
+# Full reference: https://docs.iron.sh (the upstream repo ships
+# `iron-proxy.example.yaml` with every transform).
+
+dns:
+  listen: ":53"
+  # MUST equal the proxy container's static IP in docker-compose.yml: every
+  # intercepted lookup answers with this address, which is what steers the
+  # workload's traffic through the proxy.
+  proxy_ip: "10.231.0.2"
+  # Names answered by the OS resolver, i.e. they BYPASS the proxy entirely.
+  # Keep empty unless an internal-only zone deliberately escapes inspection.
+  passthrough: []
+
+proxy:
+  http_listen: ":80"
+  https_listen: ":443"
+  # Long agent turns / streamed tool output can take a while before response
+  # headers arrive; the 30s default would surface as a spurious 502 mid-task.
+  upstream_response_header_timeout: "5m"
+  # Do NOT disable the upstream deny list: it is what stops an allowlisted
+  # hostname from being re-pointed at cloud metadata (169.254.169.254) or
+  # loopback — the SSRF/DNS-rebinding gap. IMDS + loopback are denied by default.
+
+tls:
+  # mitm = terminate TLS, inspect the request, mint a leaf cert from the CA below.
+  # The runtime container must trust that CA; it does so via
+  # MULTICA_EGRESS_PROXY=iron-proxy + MULTICA_EGRESS_PROXY_CA (see README.md).
+  mode: "mitm"
+  ca_cert: "/certs/ca.crt"
+  ca_key: "/certs/ca.key"
+
+transforms:
+  - name: allowlist
+    config:
+      # Observe first: allow everything, log what WOULD be blocked.
+      # warn: true
+      domains:
+        # Multica control plane — api.multica.ai (MULTICA_SERVER_URL) is the
+        # boot gate: no access means `multica login` fails and the container
+        # CrashLoops. WebSocket task streams ride the same host.
+        - "*.multica.ai"
+
+        # Claude Code harness (ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN).
+        # `*.anthropic.com` covers api.anthropic.com. A gateway/proxy endpoint
+        # (ANTHROPIC_BASE_URL) is a different host — add yours.
+        - "*.anthropic.com"
+        - "*.claude.ai"
+
+        # Cursor harness (cursor-agent). VERIFY these against your own run —
+        # Cursor's endpoint set changes without notice.
+        - "*.cursor.sh"
+        - "*.cursor.com"
+
+        # git over HTTPS: `multica repo checkout` (github.com), raw file fetches,
+        # release-tarball downloads, the GitHub App token exchange (api.github.com).
+        - "*.github.com"
+        - "*.githubusercontent.com"
+        - "*.githubassets.com"
+        - "ghcr.io"
+
+        # Package/toolchain registries. asdf installs at runtime, and agent tasks
+        # routinely install dependencies; drop the ones your fleet never uses.
+        - "*.npmjs.org"
+        - "*.nodejs.org"
+        - "*.yarnpkg.com"
+        - "proxy.golang.org"
+        - "sum.golang.org"
+        - "*.pypi.org"
+        - "*.pythonhosted.org"
+        - "*.rubygems.org"
+        - "*.crates.io"
+        - "*.rust-lang.org"
+        - "*.golang.org"
+        - "storage.googleapis.com"
+
+        # AWS CLI / aws-sso (the image ships both; SSO login talks to the
+        # identity-provider endpoints). Narrow this to your own partition/region.
+        - "*.amazonaws.com"
+        - "*.amazoncognito.com"
+        - "*.awsapps.com"
+
+      # Keep this empty unless a workload genuinely needs to reach another
+      # address on the docker network: allowing a CIDR widens the policy to
+      # every service in that subnet.
+      # cidrs:
+      #   - "10.231.0.0/24"
+
+log:
+  level: "info"
