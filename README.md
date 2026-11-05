@@ -181,6 +181,19 @@ Tiers are ordered **most → least secure for managed credentials**. `bin/config
 - `GITHUB_HOST` selects the host for all three GitHub tiers (not GitHub Enterprise-aware for other forges — GitLab/Gitea settings are independent).
 - Boot logs the chosen tier (`git HTTPS: GitHub auth tier=…`) and never echoes `GITHUB_PASSWORD`, the PAT, or the App PEM.
 
+### Git SSH remotes (`MULTICA_FORCE_HTTPS_GIT`)
+
+This image ships **no SSH key** — git auth is HTTPS-only (see [`gh` CLI auth](#gh-cli-auth)). At boot `bin/configure-git-auth.sh` therefore rewrites SSH remotes to HTTPS for every forge host it configured credentials for:
+
+```
+git@<host>:      → https://<host>/
+ssh://git@<host>/ → https://<host>/
+```
+
+`MULTICA_FORCE_HTTPS_GIT` (default `true`) gates that `insteadOf` rewrite. Set it to `false` when the runtime **does** have working SSH (e.g. a mounted key) and a task repo must clone over SSH: no `insteadOf` entries are written and remotes are left as-is. Accepted values: `true`/`1`/`yes`/`on` and `false`/`0`/`no`/`off` (case-insensitive); anything else is a hard boot error, not a silent default. HTTPS credentials are still configured either way.
+
+`core.sshCommand` is set to `ssh -o ConnectTimeout=10 -o BatchMode=yes` **unconditionally** — it is a fail-fast safety net, not the forced rewrite. With the rewrite off, an SSH remote is expected, but a connection that can never complete must fail in 10s instead of hanging the task forever.
+
 ### `gh` CLI auth
 
 `gh` is installed (`/usr/local/bin/gh-real`) behind a thin wrapper (`/usr/local/bin/gh`, [`bin/gh-wrapper.sh`](bin/gh-wrapper.sh)). `configure-git-auth.sh` writes `~/.multica/git-auth.env` (0600) with `GH_TOKEN`/`GITHUB_TOKEN`/`GH_HOST` for the resolved tier and the entrypoint exports it, so the daemon and the tasks it spawns inherit gh auth without the token ever being logged. There is no interactive `gh auth login`: the container is headless and `~` is ephemeral, so state is re-derived from the tier at every boot instead of persisted.
@@ -349,6 +362,7 @@ See [`.env.example`](.env.example) for optional non-secret knobs. Tokens prefer 
 | `MULTICA_DAEMON_DEVICE_NAME` | Native CLI alias of `MULTICA_MACHINE_NAME` (set only one — differing values are a hard boot error) |
 | `MULTICA_EGRESS_PROXY` | `off` (default, direct egress) \| `iron-proxy`. Enables MITM-CA trust + fail-closed boot. See [Egress control](#egress-control-optional). |
 | `MULTICA_EGRESS_PROXY_CA` | Proxy CA to trust (default `/run/certs/iron-proxy/ca.crt`); read-only mount, certificate only |
+| `MULTICA_FORCE_HTTPS_GIT` | `true` (default) rewrites `git@<host>:` / `ssh://git@<host>/` remotes to HTTPS for every forge host configured above; `false` leaves them untouched. See [Git SSH remotes](#git-ssh-remotes-multica_force_https_git). |
 
 ## Machine name (`MULTICA_MACHINE_NAME`)
 

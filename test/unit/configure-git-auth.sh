@@ -35,7 +35,7 @@ clear_git_env() {
   unset GITHUB_TOKEN GITHUB_USER GITHUB_PASSWORD GITHUB_HOST \
     GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY GITHUB_APP_PRIVATE_KEY_FILE \
     GITLAB_TOKEN GITLAB_HOST GITEA_TOKEN GITEA_HOST GITEA_USER GH_TOKEN GH_HOST \
-    GITHUB_AUTH_TIER
+    GITHUB_AUTH_TIER MULTICA_FORCE_HTTPS_GIT
 }
 
 gh_env() { cat "$GIT_AUTH_ENV_FILE" 2>/dev/null || true; }
@@ -321,6 +321,81 @@ if run_script GITHUB_TOKEN=ghp_unit; then
 else
   bad "core.sshCommand case exited non-zero"
   sed -n 1,10p "$WORK/out" >&2
+fi
+
+echo "==> Optional SSH->HTTPS rewrite (BOX-108: MULTICA_FORCE_HTTPS_GIT)"
+
+# Explicit false: no insteadOf rewrite for any forge host...
+: >"$GIT_CONFIG_GLOBAL"
+: >"$GIT_CREDENTIALS_FILE"
+if run_script GITHUB_TOKEN=ghp_unit GITLAB_TOKEN=glpat_unit MULTICA_FORCE_HTTPS_GIT=false; then
+  rewrites="$(git config --global --get-regexp '\.insteadOf$' 2>/dev/null || true)"
+  if [ -z "$rewrites" ]; then
+    ok "MULTICA_FORCE_HTTPS_GIT=false: no insteadOf rewrite written"
+  else
+    bad "MULTICA_FORCE_HTTPS_GIT=false still wrote insteadOf: $rewrites"
+  fi
+else
+  bad "MULTICA_FORCE_HTTPS_GIT=false exited non-zero"
+  sed -n 1,10p "$WORK/out" >&2
+fi
+
+# ...but the fail-fast sshCommand fallback stays unconditional.
+ssh_cmd="$(git config --global --get core.sshCommand 2>/dev/null || true)"
+if printf '%s' "$ssh_cmd" | grep -q 'ConnectTimeout=10' && printf '%s' "$ssh_cmd" | grep -q 'BatchMode=yes'; then
+  ok "MULTICA_FORCE_HTTPS_GIT=false: core.sshCommand ConnectTimeout/BatchMode still set"
+else
+  bad "MULTICA_FORCE_HTTPS_GIT=false dropped core.sshCommand: '$ssh_cmd'"
+fi
+
+# Falsy spellings are equivalent, and HTTPS credentials are still written.
+for off_value in 0 off no FALSE; do
+  : >"$GIT_CONFIG_GLOBAL"
+  : >"$GIT_CREDENTIALS_FILE"
+  if run_script GITHUB_TOKEN=ghp_unit "MULTICA_FORCE_HTTPS_GIT=$off_value"; then
+    if [ -z "$(git config --global --get-all 'url.https://github.com/.insteadOf' 2>/dev/null || true)" ] \
+      && [ "$(creds)" = "https://x-access-token:ghp_unit@github.com" ]; then
+      ok "MULTICA_FORCE_HTTPS_GIT=$off_value: rewrite skipped, credentials still stored"
+    else
+      bad "MULTICA_FORCE_HTTPS_GIT=$off_value: unexpected gitconfig/credentials"
+    fi
+  else
+    bad "MULTICA_FORCE_HTTPS_GIT=$off_value exited non-zero"
+    sed -n 1,10p "$WORK/out" >&2
+  fi
+done
+
+# Default (unset) keeps today's behavior: rewrite on. Truthy spellings too.
+for on_value in UNSET true 1 ON yes; do
+  : >"$GIT_CONFIG_GLOBAL"
+  : >"$GIT_CREDENTIALS_FILE"
+  if [ "$on_value" = UNSET ]; then
+    label="unset"
+    if run_script GITHUB_TOKEN=ghp_unit; then run_ok=1; else run_ok=0; fi
+  else
+    label="$on_value"
+    if run_script GITHUB_TOKEN=ghp_unit "MULTICA_FORCE_HTTPS_GIT=$on_value"; then run_ok=1; else run_ok=0; fi
+  fi
+  if [ "$run_ok" = 1 ] \
+    && git config --global --get-all 'url.https://github.com/.insteadOf' 2>/dev/null | grep -qx 'git@github.com:'; then
+    ok "MULTICA_FORCE_HTTPS_GIT=$label: rewrite applied"
+  else
+    bad "MULTICA_FORCE_HTTPS_GIT=$label: no insteadOf rewrite (script exit ok=$run_ok)"
+    sed -n 1,10p "$WORK/out" >&2
+  fi
+done
+
+# Garbage is a hard error, not a silent default.
+: >"$GIT_CONFIG_GLOBAL"
+if run_script GITHUB_TOKEN=ghp_unit MULTICA_FORCE_HTTPS_GIT=maybe; then
+  bad "MULTICA_FORCE_HTTPS_GIT=maybe should hard-fail"
+else
+  if grep -q 'MULTICA_FORCE_HTTPS_GIT' "$WORK/out"; then
+    ok "MULTICA_FORCE_HTTPS_GIT=maybe: hard error naming the variable"
+  else
+    bad "MULTICA_FORCE_HTTPS_GIT=maybe: exited non-zero without a clear message"
+    sed -n 1,10p "$WORK/out" >&2
+  fi
 fi
 
 echo

@@ -20,6 +20,15 @@
 #   GITLAB_TOKEN + GITLAB_HOST   → GitLab (default host gitlab.com)
 #   GITEA_TOKEN  + GITEA_HOST    → Gitea/Forgejo (host required)
 #   GITEA_USER                   → optional username (default oauth2)
+#   MULTICA_FORCE_HTTPS_GIT      → true|false (default true). When true, every
+#                                  forge host this script configures gets an
+#                                  insteadOf rewrite so SSH remotes
+#                                  (git@<host>:, ssh://git@<host>/) resolve to
+#                                  HTTPS — this image ships no SSH key, so an
+#                                  SSH remote can only hang. Set false to leave
+#                                  remotes untouched (runtime with working SSH).
+#                                  The core.sshCommand ConnectTimeout fallback
+#                                  is unconditional and is NOT gated by this.
 #
 # Also writes ${MULTICA_HOME:-$HOME/.multica}/git-auth.env (0600) with
 # GH_TOKEN/GITHUB_TOKEN/GH_HOST so the daemon environment — and therefore the
@@ -115,13 +124,27 @@ uri_encode() {
   fi
 }
 
+# Is the SSH→HTTPS rewrite enabled? MULTICA_FORCE_HTTPS_GIT defaults to true
+# (today's behavior); an unrecognized value is a hard error, never a silent
+# guess — same contract as MULTICA_EGRESS_PROXY / MULTICA_LOG_LEVEL.
+force_https_git_enabled() {
+  local raw
+  raw="$(printf '%s' "${MULTICA_FORCE_HTTPS_GIT:-true}" | tr '[:upper:]' '[:lower:]')"
+  case "$raw" in
+    1|true|yes|on) return 0 ;;
+    0|false|no|off) return 1 ;;
+    *) die "MULTICA_FORCE_HTTPS_GIT='${MULTICA_FORCE_HTTPS_GIT}' is not a boolean (expected true | false)" ;;
+  esac
+}
+
 # $1=host (no scheme). This runtime ships no SSH key, so a `git@<host>:` or
 # `ssh://git@<host>/` remote can only hang trying auth it can never complete —
 # rewrite it to the HTTPS form we do have credentials for. Scoped to hosts we
 # actually configure credentials for (the repo(s) being worked on), not every
-# possible git host.
+# possible git host. Opt out with MULTICA_FORCE_HTTPS_GIT=false.
 force_https_for_host() {
   [ -n "${1:-}" ] || return 0
+  force_https_git_enabled || return 0
   git config --global --add url."https://$1/".insteadOf "git@$1:"
   git config --global --add url."https://$1/".insteadOf "ssh://git@$1/"
 }
@@ -219,11 +242,16 @@ main() {
 
   git config --global credential.helper store
 
-  # Defense in depth: this image has no SSH key, so force_https_for_host above
-  # already rewrites every forge host we configure credentials for. Any SSH
-  # git invocation that still slips through (an unconfigured host, or a task
-  # repo URL we don't rewrite) must fail fast instead of hanging forever on a
-  # blocked/filtered connection — it can never complete auth anyway.
+  if force_https_git_enabled; then
+    log "git HTTPS: SSH remotes for configured forge hosts rewritten to HTTPS (MULTICA_FORCE_HTTPS_GIT=${MULTICA_FORCE_HTTPS_GIT:-true})"
+  else
+    log "git HTTPS: SSH->HTTPS rewrite disabled (MULTICA_FORCE_HTTPS_GIT=${MULTICA_FORCE_HTTPS_GIT:-}); SSH remotes left as-is, core.sshCommand still fails fast after 10s"
+  fi
+
+  # Defense in depth, and deliberately NOT gated by MULTICA_FORCE_HTTPS_GIT:
+  # with the rewrite off, an SSH remote is expected, but a connection that can
+  # never succeed must fail fast instead of hanging forever on a blocked /
+  # filtered network. Fail-fast on an unreachable host is safe either way.
   git config --global core.sshCommand "ssh -o ConnectTimeout=10 -o BatchMode=yes"
 
   # Prefer unambiguous GH_TOKEN for tooling that reads it first.
