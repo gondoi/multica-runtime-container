@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.3.0](https://github.com/gondoi/multica-runtime-container/compare/v0.2.0...v0.3.0) (2026-11-05)
+
+
+### Features
+
+* **egress:** optional iron-proxy MITM-CA trust with fail-closed boot ([e02a546](https://github.com/gondoi/multica-runtime-container/commit/e02a54698605987082d49b6a4a6475aa1cfd41ec))
+* **git:** gate SSH-&gt;HTTPS rewrite behind MULTICA_FORCE_HTTPS_GIT ([ab0356a](https://github.com/gondoi/multica-runtime-container/commit/ab0356a5733ec087d190ffed35ed8ac8e248404b))
+
+
+### Bug Fixes
+
+* **boot:** gate readiness on daemon status field, never crash on log stream ([a8f3788](https://github.com/gondoi/multica-runtime-container/commit/a8f3788dca2eeae29fdaf6288f0966b83e1f03f3))
+* **boot:** warn when only MULTICA_AGENT_RUNTIME_NAME is set ([db74fbf](https://github.com/gondoi/multica-runtime-container/commit/db74fbfcb11b91c9d1ac6ac15827b5d6b1ce2f34))
+* **git-auth:** force HTTPS for configured forges, fail-fast SSH timeout ([7a946af](https://github.com/gondoi/multica-runtime-container/commit/7a946af407963b97c1a8132130b3910861339ad0))
+
 ## [0.2.0](https://github.com/gondoi/multica-runtime-container/compare/v0.1.0...v0.2.0) (2026-11-04)
 
 
