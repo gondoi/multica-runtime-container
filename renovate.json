@@ -1,0 +1,18 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "dependencyDashboard": true,
+  "automerge": false,
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Multica CLI pin (ARG MULTICA_VERSION in Dockerfile) -> multica-ai/multica GitHub releases. Tag is `vX.Y.Z`, the ARG holds `X.Y.Z` (no `v`), so extractVersionTemplate strips the prefix.",
+      "managerFilePatterns": ["/^Dockerfile$/"],
+      "matchStrings": ["ARG MULTICA_VERSION=(?<currentValue>[^\\s]+)"],
+      "depNameTemplate": "multica-ai/multica",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver",
+      "extractVersionTemplate": "^v?(?<version>\\d+\\.\\d+\\.\\d+)$"
+    }
+  ]
+}
