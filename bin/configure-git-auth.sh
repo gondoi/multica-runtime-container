@@ -115,11 +115,23 @@ uri_encode() {
   fi
 }
 
+# $1=host (no scheme). This runtime ships no SSH key, so a `git@<host>:` or
+# `ssh://git@<host>/` remote can only hang trying auth it can never complete —
+# rewrite it to the HTTPS form we do have credentials for. Scoped to hosts we
+# actually configure credentials for (the repo(s) being worked on), not every
+# possible git host.
+force_https_for_host() {
+  [ -n "${1:-}" ] || return 0
+  git config --global --add url."https://$1/".insteadOf "git@$1:"
+  git config --global --add url."https://$1/".insteadOf "ssh://git@$1/"
+}
+
 add_git_cred() {
   # $1=host (no scheme)  $2=username  $3=token/password
   [ -n "${1:-}" ] && [ -n "${3:-}" ] || return 0
   printf 'https://%s:%s@%s\n' "$2" "$3" "$1" >>"$CRED_FILE"
   have_git_creds=1
+  force_https_for_host "$1"
 }
 
 # gh CLI auth view for the daemon environment. Written 0600, sourced by the
@@ -155,6 +167,7 @@ configure_github_app() {
   git config --global --unset-all "credential.https://${host}.helper" 2>/dev/null || true
   git config --global "credential.https://${host}.helper" \
     '!/usr/local/bin/github-app-credential-helper.sh'
+  force_https_for_host "$host"
   write_gh_env "$token"
   log "git HTTPS: GitHub App installation helper configured (host=${host}); gh CLI auth via per-invocation mint"
 }
@@ -205,6 +218,14 @@ main() {
   fi
 
   git config --global credential.helper store
+
+  # Defense in depth: this image has no SSH key, so force_https_for_host above
+  # already rewrites every forge host we configure credentials for. Any SSH
+  # git invocation that still slips through (an unconfigured host, or a task
+  # repo URL we don't rewrite) must fail fast instead of hanging forever on a
+  # blocked/filtered connection — it can never complete auth anyway.
+  git config --global core.sshCommand "ssh -o ConnectTimeout=10 -o BatchMode=yes"
+
   # Prefer unambiguous GH_TOKEN for tooling that reads it first.
   if [ -n "${GITHUB_TOKEN:-}" ]; then
     export GH_TOKEN="${GH_TOKEN:-$GITHUB_TOKEN}"

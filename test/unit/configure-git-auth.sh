@@ -274,6 +274,55 @@ else
   fi
 fi
 
+echo "==> SSH forced to HTTPS + fail-fast timeout (BOX-106)"
+
+# PAT tier rewrites git@github.com:/ssh://git@github.com/ to https://github.com/
+# so a repo clone that would otherwise hang on SSH auth this image can never
+# complete instead transparently uses the HTTPS credentials we just configured.
+: >"$GIT_CONFIG_GLOBAL"
+: >"$GIT_CREDENTIALS_FILE"
+if run_script GITHUB_TOKEN=ghp_unit; then
+  if git config --global --get-all 'url.https://github.com/.insteadOf' | grep -qx 'git@github.com:' \
+    && git config --global --get-all 'url.https://github.com/.insteadOf' | grep -qx 'ssh://git@github.com/'; then
+    ok "PAT tier: git@github.com: and ssh://git@github.com/ rewritten to https://github.com/"
+  else
+    bad "PAT tier: missing insteadOf rewrite: $(git config --global --get-all 'url.https://github.com/.insteadOf' 2>/dev/null)"
+  fi
+else
+  bad "PAT tier (insteadOf) exited non-zero"
+  sed -n 1,10p "$WORK/out" >&2
+fi
+
+# GitLab/Gitea get the same treatment via the shared add_git_cred path.
+: >"$GIT_CONFIG_GLOBAL"
+: >"$GIT_CREDENTIALS_FILE"
+if run_script GITHUB_TOKEN=ghp_unit GITLAB_TOKEN=glpat_unit; then
+  if git config --global --get-all 'url.https://gitlab.com/.insteadOf' | grep -qx 'git@gitlab.com:'; then
+    ok "GitLab: git@gitlab.com: rewritten to https://gitlab.com/"
+  else
+    bad "GitLab: missing insteadOf rewrite"
+  fi
+else
+  bad "GitLab insteadOf case exited non-zero"
+  sed -n 1,10p "$WORK/out" >&2
+fi
+
+# Any SSH git invocation that still slips through (unrewritten host) must fail
+# fast on a blocked/filtered connection instead of hanging forever.
+: >"$GIT_CONFIG_GLOBAL"
+: >"$GIT_CREDENTIALS_FILE"
+if run_script GITHUB_TOKEN=ghp_unit; then
+  ssh_cmd="$(git config --global --get core.sshCommand 2>/dev/null || true)"
+  if printf '%s' "$ssh_cmd" | grep -q 'ConnectTimeout=10' && printf '%s' "$ssh_cmd" | grep -q 'BatchMode=yes'; then
+    ok "core.sshCommand sets ConnectTimeout + BatchMode so SSH fails fast"
+  else
+    bad "core.sshCommand missing/wrong: '$ssh_cmd'"
+  fi
+else
+  bad "core.sshCommand case exited non-zero"
+  sed -n 1,10p "$WORK/out" >&2
+fi
+
 echo
 echo "configure-git-auth: $pass passed, $fail failed"
 [ "$fail" = 0 ]
