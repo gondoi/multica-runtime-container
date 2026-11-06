@@ -11,7 +11,7 @@ the full boot contract and GitHub auth tier precedence.
 | --- | --- |
 | [`namespace.yaml`](../examples/k8s/namespace.yaml) | `multica-runtime` namespace (deploy-time name — replace it) |
 | [`serviceaccount.yaml`](../examples/k8s/serviceaccount.yaml) | ServiceAccount for the pod — IRSA annotation point for AWS creds |
-| [`secret.example.yaml`](../examples/k8s/secret.example.yaml) | Placeholder Secrets: Multica home, Cursor key, git auth (Claude Code + AWS optional) |
+| [`secret.example.yaml`](../examples/k8s/secret.example.yaml) | Placeholder Secrets: Multica home, Cursor key, git auth (Claude Code + Codex + AWS optional) |
 | [`pvc.yaml`](../examples/k8s/pvc.yaml) | `multica-runtime-workspaces` PVC — the only durable volume |
 | [`deployment.yaml`](../examples/k8s/deployment.yaml) | Single-replica Deployment wiring the Secrets + PVC together |
 
@@ -61,22 +61,23 @@ running, so checking it alone reports Ready forever.
 The **first** task run against the pod may cold-clone its repo; that is
 expected and is not part of the Ready gate.
 
-### Agent CLI harnesses (Cursor / Claude Code)
+### Agent CLI harnesses (Cursor / Claude Code / OpenAI Codex)
 
 `MULTICA_AGENT_CLI` in `deployment.yaml` (default `cursor`) names the harnesses
-the pod provisions and hard-gates: `cursor`, `claude`, or `cursor,claude`. The
-harness used for a specific run is chosen on the Multica agent definition; this
-only guarantees the CLI is present and authenticated in the pod.
+the pod provisions and hard-gates: `cursor`, `claude`, `codex`, or any comma
+combination. The harness used for a specific run is chosen on the Multica agent
+definition; this only guarantees the CLI is present and authenticated in the
+pod.
 
 Harnesses it does **not** name are masked from the PATH the daemon and its tasks
-inherit (both CLIs ship in the image). A selected harness is never masked, and
-the mask is a boot-time PATH rewrite — no image change, so updating the
+inherit (all three CLIs ship in the image). A selected harness is never masked,
+and the mask is a boot-time PATH rewrite — no image change, so updating the
 `MULTICA_AGENT_CLI` env value and restarting the pod is enough. `kubectl exec`
 shells start from the image env, so check the mask through the daemon:
 
 ```bash
 kubectl -n multica-runtime exec deploy/multica-runtime -- bash -c \
-  'p=$(pgrep -f "multica daemon" | head -1); d=$(tr "\0" "\n" </proc/$p/environ | sed -n "s/^PATH=//p"); PATH=$d command -v claude || echo "claude masked"'
+  'p=$(pgrep -f "multica daemon" | head -1); d=$(tr "\0" "\n" </proc/$p/environ | sed -n "s/^PATH=//p"); for b in claude codex; do PATH=$d command -v $b || echo "$b masked"; done'
 ```
 
 The `claude` Secret + volume are shipped **commented out** in `deployment.yaml`
@@ -101,6 +102,42 @@ Verify from inside the pod once Ready:
 ```bash
 kubectl -n multica-runtime exec deploy/multica-runtime -- claude --version
 kubectl -n multica-runtime logs deploy/multica-runtime | grep 'harness claude'
+```
+
+#### OpenAI Codex
+
+Same pattern, with one extra step: codex ignores `OPENAI_API_KEY` in the
+environment and reads `$CODEX_HOME/auth.json`, so the pod projects the key into
+that file at boot (`codex login --with-api-key`, mode 0600). A mounted
+`auth.json` from `codex login` (ChatGPT OAuth or API key) is projected instead
+and left untouched.
+
+1. Add the `codex` Secret from the commented block in `secret.example.yaml`
+   (`multica-runtime-codex`, one key only: `OPENAI_API_KEY` **or** `auth.json`).
+2. Uncomment the matching env var (`OPENAI_API_KEY_FILE` or
+   `CODEX_AUTH_JSON_FILE`), the `codex` `volumeMount`, and the `codex` volume in
+   `deployment.yaml`.
+3. Set `MULTICA_AGENT_CLI` to `codex` (or a combination).
+4. Codex runs task commands through `bubblewrap`, which needs unprivileged user
+   namespaces. If your runtime's default seccomp/AppArmor profile blocks them,
+   uncomment the `seccompProfile` / `appArmorProfile` block in the pod
+   `securityContext` — **verify first**, this is not confirmed on every
+   CNI/runtime:
+
+   ```bash
+   kubectl -n multica-runtime exec deploy/multica-runtime -- \
+     codex sandbox -- /bin/echo sandbox-ok    # needs no credential
+   ```
+
+   A blocked sandbox shows `bwrap: No permissions to create new namespace` or
+   `bwrap: Failed to make / slave` at **task** time, never at boot.
+
+Verify codex from inside the pod:
+
+```bash
+kubectl -n multica-runtime exec deploy/multica-runtime -- codex --version
+kubectl -n multica-runtime exec deploy/multica-runtime -- codex login status
+kubectl -n multica-runtime logs deploy/multica-runtime | grep 'harness codex'
 ```
 
 ### Switching GitHub auth tiers

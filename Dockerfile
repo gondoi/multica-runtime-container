@@ -1,8 +1,9 @@
 # Multica runtime home-base — thin baseline image.
 #
-# Ships: OS essentials, Multica CLI, cursor-agent + Claude Code CLIs (the two
-# agent CLI harnesses this image gates/authenticates), asdf (+ plugin install),
-# tini, non-root agent user. No consumer repo trees. No other agent CLIs.
+# Ships: OS essentials, Multica CLI, cursor-agent + Claude Code + OpenAI Codex
+# CLIs (the three agent CLI harnesses this image gates/authenticates), asdf
+# (+ plugin install), tini, non-root agent user. No consumer repo trees. No
+# other agent CLIs.
 # Harness invocation/protocol parsing belongs to the Multica CLI, not this image.
 # No mise (asdf is the locked version manager).
 #
@@ -23,6 +24,19 @@ ARG CURSOR_AGENT_VERSION=2026.10.22-27dcf5f
 # the claude harness — the boot gate then rejects MULTICA_AGENT_CLI=claude.
 ARG CLAUDE_CODE_VERSION=2.1.316
 ARG INSTALL_CLAUDE_CLI=true
+# OpenAI Codex CLI (native Rust binary, no Node in the image). Pinned to a
+# github.com/openai/codex release tag and checksum-verified against the SHA-256
+# published with that release's assets (no `curl | sh`), so the build is
+# reproducible and the pin is auditable. INSTALL_CODEX_CLI=false produces an
+# image without it (~310 MB smaller); the boot gate then rejects
+# MULTICA_AGENT_CLI=codex with an actionable message.
+ARG CODEX_VERSION=0.167.0
+ARG INSTALL_CODEX_CLI=true
+# Per-target SHA-256 of codex-package-<target>.tar.gz for rust-v${CODEX_VERSION}.
+# Bump together with CODEX_VERSION: the build refuses to install an unverified
+# or unpinned binary.
+ARG CODEX_PACKAGE_SHA256_LINUX_X64=3bbf75e83de6b58aed28f2cf6e33ad423ec31fd4700a1457b94be557ea5a7c6e
+ARG CODEX_PACKAGE_SHA256_LINUX_ARM64=0de261ecf1e7f3028a7952f03fca2093f749277d38590b78bb32f8567756bbb7
 # GitHub CLI (pinned). Installed as gh-real; /usr/local/bin/gh is bin/gh-wrapper.sh.
 ARG GH_VERSION=2.103.3
 # AWS CLI v2 (pinned). No baked-in credentials — see README AWS auth tiers.
@@ -32,6 +46,7 @@ ARG AWS_SSO_VERSION=2.1.0
 
 # ── System deps (language-agnostic) ──────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    bubblewrap \
     ca-certificates \
     curl \
     git \
@@ -124,6 +139,52 @@ RUN set -eux; \
     mkdir -p /home/agent/.claude; \
     chown agent:agent /home/agent/.claude; \
     claude --version
+
+# ── OpenAI Codex CLI (pinned native binary; no Node, no baked credentials) ─
+# Downloaded from the openai/codex GitHub release for the pinned tag and
+# verified against the SHA-256 published with that release (not `curl | sh`).
+# Installed from the release's *package* layout (bin/codex + codex-path/rg +
+# codex-resources/bwrap) rather than the bare single binary: codex resolves
+# those helpers relative to its real executable and warns/fails when they are
+# missing (its own "create PATH aliases" step cannot write into this image's
+# root-owned PATH dirs). The package's voice/ and remote-exec-server payloads
+# are not extracted — the daemon runs codex locally, without either.
+# Auth is provisioned at runtime: OPENAI_API_KEY (env or Secret file) is turned
+# into $CODEX_HOME/auth.json by bin/agent-harness.sh, or an auth.json from
+# `codex login` is projected in — see README "Agent CLI harnesses".
+# bubblewrap (installed above) is what codex's Linux sandbox uses for
+# workspace-write; a bundled copy also ships in codex-resources/bwrap.
+RUN set -eux; \
+    if [ "${INSTALL_CODEX_CLI}" != "true" ]; then \
+      echo "codex CLI: skipped (INSTALL_CODEX_CLI=${INSTALL_CODEX_CLI})"; \
+      exit 0; \
+    fi; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) codex_target=x86_64-unknown-linux-musl; codex_sha="${CODEX_PACKAGE_SHA256_LINUX_X64}" ;; \
+      arm64) codex_target=aarch64-unknown-linux-musl; codex_sha="${CODEX_PACKAGE_SHA256_LINUX_ARM64}" ;; \
+      *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+    esac; \
+    if ! printf '%s' "$codex_sha" | grep -Eq '^[0-9a-f]{64}$'; then \
+      echo "codex CLI: no pinned SHA-256 for $arch (set CODEX_PACKAGE_SHA256_LINUX_*)" >&2; \
+      exit 1; \
+    fi; \
+    mkdir -p /tmp/codex /usr/local/lib/codex; \
+    curl -fsSL "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-package-${codex_target}.tar.gz" \
+      -o /tmp/codex/codex-package.tar.gz; \
+    printf '%s  %s\n' "$codex_sha" /tmp/codex/codex-package.tar.gz | sha256sum -c -; \
+    tar -xzf /tmp/codex/codex-package.tar.gz -C /usr/local/lib/codex \
+      bin/codex codex-path/rg codex-resources/bwrap codex-package.json; \
+    rm -rf /tmp/codex; \
+    chmod 0755 /usr/local/lib/codex/bin/codex /usr/local/lib/codex/codex-path/rg /usr/local/lib/codex/codex-resources/bwrap; \
+    ln -sf /usr/local/lib/codex/bin/codex /usr/local/bin/codex; \
+    # Codex re-execs itself as `codex-linux-sandbox` (the Linux sandbox helper)
+    # and cannot create that alias itself in this image (PATH dirs are
+    # root-owned, so its "could not create PATH aliases" path is not available).
+    ln -sf /usr/local/lib/codex/bin/codex /usr/local/bin/codex-linux-sandbox; \
+    mkdir -p /home/agent/.codex; \
+    chown agent:agent /home/agent/.codex; \
+    codex --version
 
 # ── GitHub CLI (pinned release tarball; wrapper installed below) ─────────
 RUN arch="$(dpkg --print-architecture)" && \

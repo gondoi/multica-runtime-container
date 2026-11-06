@@ -74,7 +74,9 @@ work**. It cannot re-point its own resolver, so:
    `$MULTICA_HOME/egress-ca-bundle.crt`, written atomically.
 3. **Export it through every relevant toolchain knob**, so the daemon and every
    task it spawns inherit trust:
-   `SSL_CERT_FILE` (Go: `multica`, `gh`), `CURL_CA_BUNDLE`,
+   `SSL_CERT_FILE` (Go: `multica`, `gh`; also OpenAI Codex — the pinned
+   `codex-cli 0.167.0` reads `SSL_CERT_FILE`/`CODEX_CA_CERTIFICATE`),
+   `CURL_CA_BUNDLE`,
    `GIT_SSL_CAINFO` (git/curl), `NODE_EXTRA_CA_CERTS` (Node/Bun: Claude Code
    native binary), `REQUESTS_CA_BUNDLE` (AWS CLI v2), `AWS_CA_BUNDLE`
    (botocore).
@@ -120,8 +122,8 @@ PASS  proxy audit log records the rejection (rejected_by field)
 
 That run used the boot-seam stub `multica`, i.e. it proves the *egress* path,
 not a real harness conversation. A first real task per harness (`cursor`,
-`claude`) is still worth running against the example before trusting the
-allowlist in production — the harness CLIs talk to endpoints we cannot
+`claude`, `codex`) is still worth running against the example before trusting
+the allowlist in production — the harness CLIs talk to endpoints we cannot
 enumerate for you.
 
 ## Rollback

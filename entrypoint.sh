@@ -205,9 +205,12 @@ fi
 
 # Export Cursor key for cursor-agent (Secret / env-file / file-mount parity).
 export CURSOR_API_KEY
-# ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_AUTH_TOKEN are
-# exported by materialize-secrets.sh and inherited by the daemon, which passes
-# them to the Claude Code CLI it spawns. Never logged.
+# Agent CLI harness credentials are exported by materialize-secrets.sh and
+# inherited by the daemon, which passes them to the CLI it spawns. Never logged.
+# Codex is the exception: codex-cli 0.167.0 ignores OPENAI_API_KEY and reads
+# $CODEX_HOME/auth.json, so bin/agent-harness.sh turns the key into that file
+# when codex is selected (verified against the real binary — see the harness
+# library). CODEX_HOME itself is left to the daemon, which sets it per task.
 
 # Resolve workspace ref (UUID / slug / display name) → UUID.
 # Returns empty string if unresolved (caller decides whether to die).

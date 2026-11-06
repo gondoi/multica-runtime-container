@@ -10,11 +10,15 @@ and GitHub auth tiers. This doc only covers the Docker-specific mechanics.
 ### Build
 
 ```bash
-# Both harnesses (default): Cursor + Claude Code
+# All harnesses (default): Cursor + Claude Code + OpenAI Codex
 docker build -t multica-runtime:local .
 
 # Cursor-only, ~330 MB smaller (the claude gate then fails with a clear message)
 docker build --build-arg INSTALL_CLAUDE_CLI=false -t multica-runtime:local-cursor .
+
+# Never run the codex harness? Leave it out (~320 MB smaller; the codex gate
+# then fails with an actionable message):
+docker build --build-arg INSTALL_CODEX_CLI=false -t multica-runtime:local-nocodex .
 ```
 
 ### Smoke test (no secrets, no daemon)
@@ -23,17 +27,19 @@ Verify the baseline binaries exist without booting the daemon:
 
 ```bash
 docker run --rm --entrypoint /bin/bash multica-runtime:local -lc \
-  'command -v multica cursor-agent claude gh aws asdf git ssh jq curl tini ready.sh materialize-secrets.sh agent-harness.sh && claude --version && gh --version && aws --version'
+  'command -v multica cursor-agent claude codex gh aws asdf git ssh jq curl tini ready.sh materialize-secrets.sh agent-harness.sh && claude --version && codex --version && gh --version && aws --version'
 ```
 
 ### Agent CLI harnesses
 
 `MULTICA_AGENT_CLI` (default `cursor`) decides which harnesses the entrypoint
-provisions and hard-gates — `cursor`, `claude`, or `cursor,claude`. Claude needs
-one of `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_AUTH_TOKEN`;
-Cursor needs `CURSOR_API_KEY`. Each selected harness must have **both** its
-binary and a credential or the container exits non-zero (CrashLoop) with an
-actionable message. Full semantics and the credential-tier risk note:
+provisions and hard-gates — `cursor`, `claude`, `codex`, or any comma
+combination. Claude needs one of `ANTHROPIC_API_KEY`,
+`CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_AUTH_TOKEN`; Cursor needs
+`CURSOR_API_KEY`; Codex needs `OPENAI_API_KEY` or a pre-provisioned `auth.json`.
+Each selected harness must have **both** its binary and a credential or the
+container exits non-zero (CrashLoop) with an actionable message. Full semantics
+and the credential-tier risk note:
 [README → Agent CLI harnesses](../README.md#agent-cli-harnesses-multica_agent_cli).
 
 Claude-only compose run (no Cursor key needed):
@@ -42,14 +48,51 @@ Claude-only compose run (no Cursor key needed):
 MULTICA_AGENT_CLI=claude docker compose up -d --build
 ```
 
-Harnesses you did **not** select are masked from the PATH the daemon and its
-tasks inherit (both CLIs are installed in the image, so a Cursor-only
-deployment would otherwise still expose `claude`). Check it against the daemon
-environment — `docker compose exec` shells start from the image env instead:
+#### Codex: credential + bubblewrap
+
+Codex ignores `OPENAI_API_KEY` in the environment and reads
+`$CODEX_HOME/auth.json`, so the entrypoint projects the key into that file
+(`codex login --with-api-key`, mode 0600). Mount a `codex login` `auth.json`
+instead when you want a ChatGPT-OAuth login.
+
+Codex also runs commands through `bubblewrap`, which needs unprivileged user
+namespaces. Docker's default seccomp + AppArmor profiles block that on Ubuntu,
+so a **task** fails with `bwrap: No permissions to create new namespace` or
+`bwrap: Failed to make / slave`. Add both opts to the service when running the
+codex harness (the minimum on the machine this repo was developed on):
+
+```yaml
+services:
+  runtime:
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
+```
 
 ```bash
-# Cursor-only deployment: the daemon must not resolve claude
-docker compose exec runtime bash -c 'p=$(pgrep -f "multica daemon" | head -1); d=$(tr "\0" "\n" </proc/$p/environ | sed -n "s/^PATH=//p"); PATH=$d command -v claude || echo "claude masked"'
+# and check it — needs no credential
+docker compose exec runtime codex sandbox -- /bin/echo ok
+```
+
+That minimum is host-dependent. A GitHub-hosted runner refuses even with
+`--privileged`: bubblewrap also brings up loopback inside its network namespace,
+and that fails with `bwrap: loopback: Failed RTM_NEWADDR: Operation not
+permitted` there. So no single flag set is guaranteed — verify with the `codex
+sandbox` command above after changing anything. The failure only shows up at
+task time, never at boot.
+
+These weaken isolation for every harness in the container, so they are not
+defaults: they ship commented out in `docker-compose.yml`.
+
+Harnesses you did **not** select are masked from the PATH the daemon and its
+tasks inherit (all three CLIs are installed in the image, so a Cursor-only
+deployment would otherwise still expose `claude` and `codex`). Check it against
+the daemon environment — `docker compose exec` shells start from the image env
+instead:
+
+```bash
+# Cursor-only deployment: the daemon must not resolve claude or codex
+docker compose exec runtime bash -c 'p=$(pgrep -f "multica daemon" | head -1); d=$(tr "\0" "\n" </proc/$p/environ | sed -n "s/^PATH=//p"); for b in claude codex; do PATH=$d command -v $b || echo "$b masked"; done'
 ```
 
 Masking is a boot-time PATH rewrite (no uninstall): restart with a different
@@ -82,6 +125,18 @@ repo root that mirrors the Kubernetes Secret-mount contract using a local
    printf '%s' "$ANTHROPIC_API_KEY" > secrets/claude/ANTHROPIC_API_KEY
    # or: printf '%s' "$CLAUDE_CODE_OAUTH_TOKEN" > secrets/claude/CLAUDE_CODE_OAUTH_TOKEN
    # then run compose with MULTICA_AGENT_CLI=claude (or cursor,claude)
+   ```
+
+   For the OpenAI Codex harness, create `secrets/codex/` with the API key (it is
+   projected into `~/.codex/auth.json` at boot) — and uncomment the
+   `security_opt` block in `docker-compose.yml` (see
+   [Codex: credential + bubblewrap](#codex-credential--bubblewrap)):
+
+   ```bash
+   mkdir -p secrets/codex
+   printf '%s' "$OPENAI_API_KEY" > secrets/codex/OPENAI_API_KEY
+   # or: cp ~/.codex/auth.json secrets/codex/auth.json   # a `codex login` login
+   # then run compose with MULTICA_AGENT_CLI=codex (or cursor,claude,codex)
    ```
 
    To use the GitHub App tier instead of a PAT, drop `secrets/git/GITHUB_TOKEN`

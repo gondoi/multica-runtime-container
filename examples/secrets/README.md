@@ -16,6 +16,9 @@ secrets/
     ANTHROPIC_API_KEY          # option 1: API key
     # CLAUDE_CODE_OAUTH_TOKEN  # option 2: from `claude setup-token`
     # ANTHROPIC_AUTH_TOKEN     # option 3: gateway bearer token (+ ANTHROPIC_BASE_URL env)
+  codex/            # only when MULTICA_AGENT_CLI includes `codex`
+    OPENAI_API_KEY             # option 1: API key (projected into ~/.codex/auth.json)
+    # auth.json                # option 2: a login from `codex login` (API key or ChatGPT OAuth)
   git/
     GITHUB_TOKEN    # Option A: static PAT (and/or GITLAB_TOKEN, GITEA_TOKEN)
     # Option B: GitHub App (org-safe; use instead of or preferred over PAT)
@@ -39,11 +42,19 @@ no extra Secret is needed for `gh`.
 ## Agent CLI harnesses
 
 `MULTICA_AGENT_CLI` (default `cursor`) names the harnesses this container
-provisions and hard-gates: `cursor`, `claude`, or `cursor,claude`. Claude needs
-**one** of `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_AUTH_TOKEN`;
-Cursor needs `CURSOR_API_KEY`. A selected harness with no credential is a hard
-boot failure (CrashLoop), not a silent fallback — see the root README
+provisions and hard-gates: `cursor`, `claude`, `codex`, or any combination.
+Claude needs **one** of `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`,
+`ANTHROPIC_AUTH_TOKEN`; Cursor needs `CURSOR_API_KEY`; Codex needs
+`OPENAI_API_KEY` **or** a pre-provisioned `auth.json`. A selected harness with
+no credential is a hard boot failure (CrashLoop), not a silent fallback — see
+the root README
 [Agent CLI harnesses](../README.md#agent-cli-harnesses-multica_agent_cli).
+
+Codex is special: the CLI authenticates from `$CODEX_HOME/auth.json` and ignores
+`OPENAI_API_KEY` in the environment, so the entrypoint converts the key into
+that file at boot (`codex login --with-api-key`, mode 0600). Mount a real
+`auth.json` instead when you already ran `codex login` (ChatGPT OAuth or an API
+key) — that file is projected unchanged and the env key is not applied.
 
 ## Compose
 
@@ -56,6 +67,11 @@ printf '%s' 'cursor_…' > secrets/cursor/CURSOR_API_KEY
 # Optional — Claude Code harness (needs MULTICA_AGENT_CLI=claude or cursor,claude):
 # mkdir -p secrets/claude
 # printf '%s' 'sk-ant-…' > secrets/claude/ANTHROPIC_API_KEY
+# Optional — OpenAI Codex harness (needs MULTICA_AGENT_CLI=codex or a combination):
+# mkdir -p secrets/codex
+# printf '%s' 'sk-…' > secrets/codex/OPENAI_API_KEY
+# # or mount a login created by `codex login` instead of the key:
+# # cp ~/.codex/auth.json secrets/codex/auth.json
 # Option A — PAT:
 printf '%s' 'ghp_…'    > secrets/git/GITHUB_TOKEN
 # Option B — GitHub App (omit GITHUB_TOKEN when switching fully):
