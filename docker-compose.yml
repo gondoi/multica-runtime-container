@@ -89,15 +89,19 @@ services:
     restart: unless-stopped
     # Codex harness only: codex's Linux sandbox (workspace-write, the mode the
     # Multica daemon asks for) runs commands through bubblewrap, which needs
-    # unprivileged user + mount namespaces. Docker's default seccomp and AppArmor
-    # profiles block that on Ubuntu hosts, so a codex task fails with
-    # "bwrap: No permissions to create new namespace" / "Failed to make / slave".
-    # These two opts are the minimum that makes it work (verified); they also
-    # relax isolation for every other harness in this container, so they are
-    # opt-in rather than shipped on by default. Equivalent: --privileged.
+    # unprivileged user, mount and network namespaces. Docker's default seccomp
+    # and AppArmor profiles block that on Ubuntu hosts, so a codex task fails
+    # with "bwrap: No permissions to create new namespace" / "Failed to make /
+    # slave" — and on some kernels "bwrap: loopback: Failed RTM_NEWADDR".
+    # These two opts are the minimum on the machine this repo was developed on;
+    # GitHub-hosted runners need --privileged instead. Both relax isolation for
+    # every harness in this container, so this is opt-in, not a default.
+    # Verify after changing anything: docker compose exec runtime \
+    #   codex sandbox -- /bin/echo ok
     # security_opt:
     #   - seccomp=unconfined
     #   - apparmor=unconfined
+    # privileged: true   # portable superset when the above is not enough
     healthcheck:
       test: ["CMD", "/usr/local/bin/ready.sh"]
       interval: 10s

@@ -59,7 +59,7 @@ Codex also runs commands through `bubblewrap`, which needs unprivileged user
 namespaces. Docker's default seccomp + AppArmor profiles block that on Ubuntu,
 so a **task** fails with `bwrap: No permissions to create new namespace` or
 `bwrap: Failed to make / slave`. Add both opts to the service when running the
-codex harness (verified minimum here; `--privileged` also works):
+codex harness (the minimum on the machine this repo was developed on):
 
 ```yaml
 services:
@@ -73,6 +73,13 @@ services:
 # and check it — needs no credential
 docker compose exec runtime codex sandbox -- /bin/echo ok
 ```
+
+That minimum is host-dependent. On GitHub-hosted runners it is not enough:
+bubblewrap also brings up loopback inside its network namespace, and that fails
+with `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`. There,
+`--privileged` (or a profile with `NET_ADMIN`) is required. Verify with the
+`codex sandbox` command above after changing anything — the failure only shows
+up at task time, never at boot.
 
 These weaken isolation for every harness in the container, so they are not
 defaults: they ship commented out in `docker-compose.yml`.

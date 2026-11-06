@@ -520,15 +520,18 @@ fi
 echo "==> Happy path — OpenAI Codex harness (env key → \$CODEX_HOME/auth.json)"
 cname_codex="multica-boot-seam-codex-$$"
 # bubblewrap — which codex's Linux sandbox uses for workspace-write — needs to
-# create user and mount namespaces. Docker's default seccomp + AppArmor profiles
-# block that (AppArmor on Ubuntu restricts unprivileged user namespaces; docker's
-# seccomp profile blocks the mount ops bwrap performs), so a codex *task* needs
-# these two opts. Boot/gate does not — only the sandbox assertion below does.
-# Minimum set verified on this host; documented in docs/docker.md.
+# create user, mount and *network* namespaces (it brings up loopback inside
+# them). What a container runtime allows varies: on this repo's dev host
+# `--security-opt seccomp=unconfined --security-opt apparmor=unconfined` was
+# enough, on GitHub-hosted runners it was not (`bwrap: loopback: Failed
+# RTM_NEWADDR: Operation not permitted`). `--privileged` is the portable
+# superset, so this assertion verifies the *image* half (bwrap + the
+# codex-linux-sandbox helper alias + landlock/seccomp wiring) regardless of the
+# runner's policy. Boot/gate need none of it — only the sandbox does. Runtime
+# guidance for real deployments: docs/docker.md.
 docker run -d --name "$cname_codex" \
   --env-file "$FIX/happy-codex.env" \
-  --security-opt seccomp=unconfined \
-  --security-opt apparmor=unconfined \
+  --privileged \
   -v "$STUB:/usr/local/bin/multica:ro" \
   "$IMAGE" >/dev/null
 assert_ready_container "$cname_codex" "happy/codex Ready"
