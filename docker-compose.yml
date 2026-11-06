@@ -1,12 +1,14 @@
 # Multica runtime home-base — compose / laptop parity with the K8s Secret
 # mount contract (no cluster required).
 #
-#   mkdir -p secrets/multica-home secrets/cursor secrets/claude secrets/git
+#   mkdir -p secrets/multica-home secrets/cursor secrets/claude secrets/codex secrets/git
 #   cp examples/secrets/multica-home/config.json.example secrets/multica-home/config.json
 #   cp examples/secrets/multica-home/daemon.id.example   secrets/multica-home/daemon.id
 #   printf '%s' "$CURSOR_API_KEY" > secrets/cursor/CURSOR_API_KEY
 #   # optional Claude Code harness (MULTICA_AGENT_CLI=claude):
 #   printf '%s' "$ANTHROPIC_API_KEY" > secrets/claude/ANTHROPIC_API_KEY
+#   # optional OpenAI Codex harness (MULTICA_AGENT_CLI=codex):
+#   printf '%s' "$OPENAI_API_KEY" > secrets/codex/OPENAI_API_KEY
 #   printf '%s' "$GITHUB_TOKEN"   > secrets/git/GITHUB_TOKEN
 #   # optional: still use .env for non-secret knobs (URLs, workspace id)
 #   cp .env.example .env
@@ -53,8 +55,15 @@ services:
       ANTHROPIC_API_KEY_FILE: /run/secrets/claude/ANTHROPIC_API_KEY
       CLAUDE_CODE_OAUTH_TOKEN_FILE: /run/secrets/claude/CLAUDE_CODE_OAUTH_TOKEN
       ANTHROPIC_AUTH_TOKEN_FILE: /run/secrets/claude/ANTHROPIC_AUTH_TOKEN
+      # OpenAI Codex harness credentials (only read when MULTICA_AGENT_CLI
+      # includes codex). Prefer ONE of: an API key, which the entrypoint turns
+      # into $CODEX_HOME/auth.json via `codex login --with-api-key`, or an
+      # auth.json created by `codex login` (API key or ChatGPT OAuth).
+      OPENAI_API_KEY_FILE: /run/secrets/codex/OPENAI_API_KEY
+      CODEX_AUTH_JSON_FILE: /run/secrets/codex/auth.json
       # Agent CLI harnesses provisioned + gated at boot: cursor | claude |
-      # cursor,claude. Default cursor = pre-Claude boot contract unchanged.
+      # codex | any comma combination (e.g. cursor,claude,codex). Default cursor
+      # = pre-Claude boot contract unchanged.
       MULTICA_AGENT_CLI: ${MULTICA_AGENT_CLI:-cursor}
       GITHUB_TOKEN_FILE: /run/secrets/git/GITHUB_TOKEN
       # AWS auth: prefer IRSA/instance-profile where available (README tiers).
@@ -69,6 +78,7 @@ services:
       - ./secrets/multica-home:/run/secrets/multica-home:ro
       - ./secrets/cursor:/run/secrets/cursor:ro
       - ./secrets/claude:/run/secrets/claude:ro
+      - ./secrets/codex:/run/secrets/codex:ro
       - ./secrets/git:/run/secrets/git:ro
       # Optional — AWS auth tier 3 static keys (mounted config/credentials).
       # - ./secrets/aws:/run/secrets/aws:ro
@@ -77,6 +87,17 @@ services:
       - ./examples/aws/config.yaml:/run/config/aws-sso/config.yaml:ro
 
     restart: unless-stopped
+    # Codex harness only: codex's Linux sandbox (workspace-write, the mode the
+    # Multica daemon asks for) runs commands through bubblewrap, which needs
+    # unprivileged user + mount namespaces. Docker's default seccomp and AppArmor
+    # profiles block that on Ubuntu hosts, so a codex task fails with
+    # "bwrap: No permissions to create new namespace" / "Failed to make / slave".
+    # These two opts are the minimum that makes it work (verified); they also
+    # relax isolation for every other harness in this container, so they are
+    # opt-in rather than shipped on by default. Equivalent: --privileged.
+    # security_opt:
+    #   - seccomp=unconfined
+    #   - apparmor=unconfined
     healthcheck:
       test: ["CMD", "/usr/local/bin/ready.sh"]
       interval: 10s

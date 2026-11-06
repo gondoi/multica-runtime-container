@@ -14,6 +14,8 @@
 #   ${ANTHROPIC_API_KEY_FILE:-/run/secrets/claude/ANTHROPIC_API_KEY}
 #   ${CLAUDE_CODE_OAUTH_TOKEN_FILE:-/run/secrets/claude/CLAUDE_CODE_OAUTH_TOKEN}
 #   ${ANTHROPIC_AUTH_TOKEN_FILE:-/run/secrets/claude/ANTHROPIC_AUTH_TOKEN}
+#   ${OPENAI_API_KEY_FILE:-/run/secrets/codex/OPENAI_API_KEY}
+#   ${CODEX_AUTH_JSON_FILE:-/run/secrets/codex/auth.json}
 #   ${GITHUB_TOKEN_FILE:-/run/secrets/git/GITHUB_TOKEN}
 #   ${GITHUB_USER_FILE:-/run/secrets/git/GITHUB_USER}
 #   ${GITHUB_PASSWORD_FILE:-/run/secrets/git/GITHUB_PASSWORD}
@@ -81,6 +83,7 @@ if [ -z "${MULTICA_TOKEN:-}" ] && [ -f "$MULTICA_HOME/config.json" ]; then
 fi
 
 # ── Cursor + git token / GitHub App files ─────────────────────────────────
+# (Claude Code + OpenAI Codex harness credentials are read in the blocks below.)
 read_secret_file CURSOR_API_KEY "${CURSOR_API_KEY_FILE:-/run/secrets/cursor/CURSOR_API_KEY}"
 # ── Claude Code harness credentials (one of the three satisfies the gate) ──
 # API key (long-lived secret) or OAuth token from `claude setup-token`; the
@@ -90,6 +93,27 @@ read_secret_file CURSOR_API_KEY "${CURSOR_API_KEY_FILE:-/run/secrets/cursor/CURS
 read_secret_file ANTHROPIC_API_KEY "${ANTHROPIC_API_KEY_FILE:-/run/secrets/claude/ANTHROPIC_API_KEY}"
 read_secret_file CLAUDE_CODE_OAUTH_TOKEN "${CLAUDE_CODE_OAUTH_TOKEN_FILE:-/run/secrets/claude/CLAUDE_CODE_OAUTH_TOKEN}"
 read_secret_file ANTHROPIC_AUTH_TOKEN "${ANTHROPIC_AUTH_TOKEN_FILE:-/run/secrets/claude/ANTHROPIC_AUTH_TOKEN}"
+# ── OpenAI Codex harness credentials ─────────────────────────────────────
+# Codex authenticates from $CODEX_HOME/auth.json, NOT from OPENAI_API_KEY
+# (verified against codex-cli 0.167.0 — see bin/agent-harness.sh). Two inputs:
+#   OPENAI_API_KEY  an API key; agent-harness.sh turns it into auth.json via
+#                   `codex login --with-api-key` once the harness is selected.
+#   auth.json       a login already created with `codex login` (API key or
+#                   ChatGPT OAuth). Projected here so the daemon's per-task
+#                   CODEX_HOME mirror finds it; never logged.
+read_secret_file OPENAI_API_KEY "${OPENAI_API_KEY_FILE:-/run/secrets/codex/OPENAI_API_KEY}"
+_codex_auth_src="${CODEX_AUTH_JSON_FILE:-/run/secrets/codex/auth.json}"
+if [ -f "$_codex_auth_src" ]; then
+  _codex_home="${CODEX_HOME:-$HOME/.codex}"
+  if mkdir -p "$_codex_home" 2>/dev/null; then
+    cp -f "$_codex_auth_src" "$_codex_home/auth.json"
+    chmod 600 "$_codex_home/auth.json" 2>/dev/null || true
+    log "codex: projected auth.json → $_codex_home/auth.json"
+  else
+    log "WARN: codex: cannot create '$_codex_home'; the mounted auth.json was not projected (OPENAI_API_KEY still works)"
+  fi
+fi
+unset _codex_auth_src _codex_home
 read_secret_file GITHUB_TOKEN "${GITHUB_TOKEN_FILE:-/run/secrets/git/GITHUB_TOKEN}"
 # GitHub Enterprise Server password tier (lowest priority) + host selector.
 read_secret_file GITHUB_USER "${GITHUB_USER_FILE:-/run/secrets/git/GITHUB_USER}"

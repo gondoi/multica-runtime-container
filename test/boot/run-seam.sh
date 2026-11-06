@@ -10,6 +10,8 @@
 #   - Secret-projected Multica home + Cursor/git file mounts (K8s parity)
 #   - Agent CLI harness gate: cursor (default) and claude (Secret-projected
 #     credential, binary usable as the non-root user, env reaching the daemon)
+#   - OpenAI Codex harness: env key projected into $CODEX_HOME/auth.json (0600),
+#     a Secret-mounted auth.json projected instead, and its Linux sandbox usable
 #   - Harness PATH mask: harnesses MULTICA_AGENT_CLI did not select are
 #     unresolvable in the daemon/task PATH (BOX-112)
 #   - login workspace_id clobber → re-pin from Secret / MULTICA_WORKSPACE slug
@@ -42,6 +44,8 @@ cname_aws=""
 cname_pwd=""
 cname_lvl=""
 cname_claude=""
+cname_codex=""
+cname_codexproj=""
 cname_machine=""
 cname_nolog=""
 cname_wedged=""
@@ -60,6 +64,8 @@ cleanup() {
   [ -n "$cname_machine" ] && docker rm -f "$cname_machine" >/dev/null 2>&1 || true
   [ -n "$cname_aws" ] && docker rm -f "$cname_aws" >/dev/null 2>&1 || true
   [ -n "$cname_claude" ] && docker rm -f "$cname_claude" >/dev/null 2>&1 || true
+  [ -n "$cname_codex" ] && docker rm -f "$cname_codex" >/dev/null 2>&1 || true
+  [ -n "$cname_codexproj" ] && docker rm -f "$cname_codexproj" >/dev/null 2>&1 || true
   [ -n "$cname_nolog" ] && docker rm -f "$cname_nolog" >/dev/null 2>&1 || true
   [ -n "$cname_wedged" ] && docker rm -f "$cname_wedged" >/dev/null 2>&1 || true
   [ -n "$cname_egress" ] && docker rm -f "$cname_egress" >/dev/null 2>&1 || true
@@ -188,6 +194,7 @@ echo "==> Crash fixtures (hard-fail secrets)"
 run_crash no-multica "$FIX/crash-no-multica.env"
 run_crash no-cursor "$FIX/crash-no-cursor.env"
 run_crash no-claude-auth "$FIX/crash-no-claude-auth.env"
+run_crash no-codex-auth "$FIX/crash-no-codex-auth.env"
 run_crash unknown-harness "$FIX/crash-unknown-harness.env"
 run_crash no-git "$FIX/crash-no-git.env"
 run_crash bad-log-level "$FIX/crash-bad-log-level.env"
@@ -510,6 +517,112 @@ else
   ok "claude credential never appears in container logs"
 fi
 
+echo "==> Happy path — OpenAI Codex harness (env key → \$CODEX_HOME/auth.json)"
+cname_codex="multica-boot-seam-codex-$$"
+# bubblewrap — which codex's Linux sandbox uses for workspace-write — needs to
+# create user and mount namespaces. Docker's default seccomp + AppArmor profiles
+# block that (AppArmor on Ubuntu restricts unprivileged user namespaces; docker's
+# seccomp profile blocks the mount ops bwrap performs), so a codex *task* needs
+# these two opts. Boot/gate does not — only the sandbox assertion below does.
+# Minimum set verified on this host; documented in docs/docker.md.
+docker run -d --name "$cname_codex" \
+  --env-file "$FIX/happy-codex.env" \
+  --security-opt seccomp=unconfined \
+  --security-opt apparmor=unconfined \
+  -v "$STUB:/usr/local/bin/multica:ro" \
+  "$IMAGE" >/dev/null
+assert_ready_container "$cname_codex" "happy/codex Ready"
+
+# The pinned native binary must actually execute as the non-root agent user on
+# this base image (musl static build), not only as root during the build.
+if codex_ver="$(docker exec "$cname_codex" codex --version 2>&1)"; then
+  ok "codex CLI runs as non-root agent user ($(printf '%s' "$codex_ver" | tail -1))"
+else
+  bad "codex CLI failed to run in the container: $codex_ver"
+fi
+
+if wait_log "$cname_codex" 'harness codex: ok'; then
+  ok "codex harness gate passed"
+else
+  bad "codex harness gate did not report ok"
+  docker logs "$cname_codex" >&2 || true
+fi
+
+if wait_log "$cname_codex" 'agent harnesses: codex'; then
+  ok "codex-only boot needs no Cursor/Anthropic credential (harnesses: codex)"
+else
+  bad "boot did not report the codex-only harness selection"
+  docker logs "$cname_codex" >&2 || true
+fi
+
+# Codex ignores OPENAI_API_KEY in the environment (codex-cli 0.167.0 sends no
+# bearer and fails "Missing bearer or basic authentication") and authenticates
+# from $CODEX_HOME/auth.json, so this projection is the difference between
+# "gate passed" and "a task can actually authenticate".
+codex_auth_mode="$(docker exec "$cname_codex" sed -n 's/.*"auth_mode"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p' /home/agent/.codex/auth.json 2>/dev/null | head -1)"
+codex_auth_perm="$(docker exec "$cname_codex" stat -c '%a' /home/agent/.codex/auth.json 2>/dev/null || true)"
+if [ "$codex_auth_mode" = "apikey" ] && [ "$codex_auth_perm" = "600" ] \
+  && docker exec "$cname_codex" grep -q 'sk-codex-boot_seam_fixture' /home/agent/.codex/auth.json; then
+  ok "OPENAI_API_KEY projected into ~/.codex/auth.json (auth_mode=apikey, mode 600)"
+else
+  bad "codex auth.json missing or wrong (auth_mode='${codex_auth_mode}', mode='${codex_auth_perm}')"
+  docker exec "$cname_codex" ls -la /home/agent/.codex >&2 || true
+  docker logs "$cname_codex" >&2 || true
+fi
+
+# The pinned binary itself must accept the projected credential — cheap proof
+# that the projection format is the one codex actually reads.
+if docker exec "$cname_codex" codex login status 2>&1 | grep -q 'API key configured'; then
+  ok "codex CLI accepts the projected credential (codex login status)"
+else
+  bad "codex CLI does not see the projected credential"
+  docker exec "$cname_codex" codex login status >&2 || true
+fi
+
+codex_daemon_pid="$(docker exec "$cname_codex" pgrep -f 'sleep infinity' 2>/dev/null | head -1 || true)"
+if [ -n "$codex_daemon_pid" ] \
+  && docker exec "$cname_codex" bash -c "tr '\\0' '\\n' < /proc/${codex_daemon_pid}/environ | grep -qx 'MULTICA_CODEX_PATH=/usr/local/bin/codex'" \
+  && docker exec "$cname_codex" bash -c "tr '\\0' '\\n' < /proc/${codex_daemon_pid}/environ | grep -qx 'OPENAI_API_KEY=sk-codex-boot_seam_fixture'"; then
+  ok "daemon env pins MULTICA_CODEX_PATH and carries OPENAI_API_KEY"
+else
+  bad "daemon environment is missing the codex path/key"
+fi
+
+if docker logs "$cname_codex" 2>&1 | grep -q 'sk-codex-boot_seam_fixture'; then
+  bad "codex credential leaked into the boot log"
+else
+  ok "codex credential never appears in container logs"
+fi
+
+# workspace-write (the daemon's codex sandbox policy) needs bubblewrap in the
+# image; without it codex fails closed at task time with "bubblewrap is
+# unavailable: no system bwrap was found on PATH". `codex sandbox` needs no
+# credential, so this is a direct image-level check of that dependency.
+if sandbox_out="$(docker exec "$cname_codex" codex sandbox -- /bin/echo codex-sandbox-ok 2>&1)" \
+  && printf '%s' "$sandbox_out" | grep -q 'codex-sandbox-ok'; then
+  ok "codex Linux sandbox runs in the container (bubblewrap present)"
+else
+  bad "codex sandbox failed inside the container: $sandbox_out"
+fi
+
+echo "==> Happy path — Codex login projected from a Secret (auth.json mount)"
+cname_codexproj="multica-boot-seam-codexproj-$$"
+docker run -d --name "$cname_codexproj" \
+  --env-file "$FIX/happy-codex-projected.env" \
+  -v "$STUB:/usr/local/bin/multica:ro" \
+  -v "$SECRETS/codex:/run/secrets/codex:ro" \
+  "$IMAGE" >/dev/null
+assert_ready_container "$cname_codexproj" "happy/codex-projected Ready"
+if wait_log "$cname_codexproj" 'codex: projected auth.json' \
+  && docker exec "$cname_codexproj" grep -q 'sk-codex-boot_seam_projected_fixture' /home/agent/.codex/auth.json \
+  && [ "$(docker exec "$cname_codexproj" stat -c '%a' /home/agent/.codex/auth.json 2>/dev/null || true)" = "600" ]; then
+  ok "mounted auth.json → ~/.codex/auth.json (0600, no OPENAI_API_KEY needed)"
+else
+  bad "mounted codex auth.json was not projected"
+  docker exec "$cname_codexproj" ls -la /home/agent/.codex >&2 || true
+  docker logs "$cname_codexproj" >&2 || true
+fi
+
 echo "==> Harness PATH mask — unselected harnesses leave the daemon/task PATH"
 # BOX-112: the image ships cursor-agent *and* claude, so a deployment that
 # selected only one must not find the other on the PATH the daemon (and every
@@ -517,10 +630,11 @@ echo "==> Harness PATH mask — unselected harnesses leave the daemon/task PATH"
 # shells inherit the image env, where both binaries stay installed.
 proj_daemon_path="$(daemon_env_path "$cname_proj" || true)"
 if [ -n "$proj_daemon_path" ] && daemon_has_bin "$cname_proj" cursor-agent \
-  && ! daemon_has_bin "$cname_proj" claude; then
-  ok "cursor-only daemon PATH: cursor-agent resolvable, claude masked"
+  && ! daemon_has_bin "$cname_proj" claude \
+  && ! daemon_has_bin "$cname_proj" codex; then
+  ok "cursor-only daemon PATH: cursor-agent resolvable, claude + codex masked"
 else
-  bad "cursor-only daemon PATH still exposes claude (PATH='${proj_daemon_path}')"
+  bad "cursor-only daemon PATH still exposes claude/codex (PATH='${proj_daemon_path}')"
 fi
 if printf '%s' "${proj_daemon_path:-}" | grep -q 'multica-harness-mask/entry-'; then
   ok "cursor-only daemon PATH points at the boot-time harness mask mirror"
@@ -537,10 +651,11 @@ fi
 claude_daemon_path="$(daemon_env_path "$cname_claude" || true)"
 if [ -n "$claude_daemon_path" ] && daemon_has_bin "$cname_claude" claude \
   && ! daemon_has_bin "$cname_claude" cursor-agent \
-  && ! daemon_has_bin "$cname_claude" agent; then
-  ok "claude-only daemon PATH: claude resolvable, cursor-agent + 'agent' alias masked"
+  && ! daemon_has_bin "$cname_claude" agent \
+  && ! daemon_has_bin "$cname_claude" codex; then
+  ok "claude-only daemon PATH: claude resolvable, cursor-agent + 'agent' alias + codex masked"
 else
-  bad "claude-only daemon PATH still exposes cursor-agent/agent (PATH='${claude_daemon_path}')"
+  bad "claude-only daemon PATH still exposes cursor-agent/agent/codex (PATH='${claude_daemon_path}')"
 fi
 if [ -n "$claude_daemon_path" ] \
   && docker exec "$cname_claude" bash -c "PATH='${claude_daemon_path}'; export PATH; claude --version" >/dev/null 2>&1; then
@@ -560,20 +675,21 @@ else
   docker logs "$cname_claude" >&2 || true
 fi
 
-echo "==> Happy path — both harnesses selected (mask is a no-op)"
+echo "==> Happy path — all harnesses selected (mask is a no-op)"
 cname_both="multica-boot-seam-both-$$"
 docker run -d --name "$cname_both" \
   --env-file "$FIX/happy-both.env" \
   -v "$STUB:/usr/local/bin/multica:ro" \
   "$IMAGE" >/dev/null
-assert_ready_container "$cname_both" "happy/both-harnesses Ready"
+assert_ready_container "$cname_both" "happy/all-harnesses Ready"
 both_daemon_path="$(daemon_env_path "$cname_both" || true)"
 if [ -n "$both_daemon_path" ] && daemon_has_bin "$cname_both" cursor-agent \
   && daemon_has_bin "$cname_both" claude \
+  && daemon_has_bin "$cname_both" codex \
   && ! printf '%s' "$both_daemon_path" | grep -q 'multica-harness-mask'; then
-  ok "cursor,claude daemon PATH: both resolvable, no mask mirror (mask is a no-op)"
+  ok "cursor,claude,codex daemon PATH: all resolvable, no mask mirror (mask is a no-op)"
 else
-  bad "both-selected boot masked a selected harness (PATH='${both_daemon_path}')"
+  bad "all-selected boot masked a selected harness (PATH='${both_daemon_path}')"
 fi
 
 # Without AWS mounts, daemon still Ready (continue-on-degrade).
