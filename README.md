@@ -210,8 +210,8 @@ Docker default seccomp/AppArmor profiles block that on Ubuntu hosts, and a codex
 
 | Runtime | What to add |
 | --- | --- |
-| Docker / Compose | `--security-opt seccomp=unconfined --security-opt apparmor=unconfined` was the minimum on this repo's dev host (Ubuntu 26.04, Docker 29.7.2). On GitHub-hosted runners that was **not** enough (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted` — bwrap also brings up loopback in a network namespace), so `--privileged` is the portable superset. Both are shipped commented in `docker-compose.yml`. |
-| Kubernetes | `securityContext.seccompProfile.type: Unconfined` + `appArmorProfile.type: Unconfined`, and if loopback setup still fails, a network-namespace-capable profile (`NET_ADMIN`). **Not verified** on a cluster here; check with `kubectl exec deploy/multica-runtime -- codex sandbox -- /bin/echo ok` first. |
+| Docker / Compose | `--security-opt seccomp=unconfined --security-opt apparmor=unconfined` was the minimum on this repo's dev host (Ubuntu 26.04, Docker 29.7.2). A GitHub-hosted runner refuses **even with `--privileged`** (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`), so this is host/kernel-dependent — there is no single flag set that is guaranteed. Shipped commented in `docker-compose.yml`. |
+| Kubernetes | `securityContext.seccompProfile.type: Unconfined` + `appArmorProfile.type: Unconfined`, and if loopback setup still fails, network-namespace capability (`NET_ADMIN`). **Not verified** on a cluster here; check with `kubectl exec deploy/multica-runtime -- codex sandbox -- /bin/echo ok` first. |
 
 Verify in any runtime: `codex sandbox -- /bin/echo ok` (needs no credential).
 Both knobs weaken isolation for every harness in the container, which is why

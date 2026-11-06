@@ -521,14 +521,12 @@ echo "==> Happy path — OpenAI Codex harness (env key → \$CODEX_HOME/auth.jso
 cname_codex="multica-boot-seam-codex-$$"
 # bubblewrap — which codex's Linux sandbox uses for workspace-write — needs to
 # create user, mount and *network* namespaces (it brings up loopback inside
-# them). What a container runtime allows varies: on this repo's dev host
-# `--security-opt seccomp=unconfined --security-opt apparmor=unconfined` was
-# enough, on GitHub-hosted runners it was not (`bwrap: loopback: Failed
-# RTM_NEWADDR: Operation not permitted`). `--privileged` is the portable
-# superset, so this assertion verifies the *image* half (bwrap + the
-# codex-linux-sandbox helper alias + landlock/seccomp wiring) regardless of the
-# runner's policy. Boot/gate need none of it — only the sandbox does. Runtime
-# guidance for real deployments: docs/docker.md.
+# them). What a container runtime permits varies by host and kernel: this
+# repo's dev host needs `--security-opt seccomp=unconfined --security-opt
+# apparmor=unconfined`, and a GitHub-hosted runner refuses even with
+# `--privileged`. `--privileged` gives the assertion a real run wherever the
+# runtime allows it; the assertion below tolerates a namespace-policy refusal
+# but still fails on an image-side defect. Boot and the gate need none of it.
 docker run -d --name "$cname_codex" \
   --env-file "$FIX/happy-codex.env" \
   --privileged \
@@ -597,15 +595,26 @@ else
   ok "codex credential never appears in container logs"
 fi
 
-# workspace-write (the daemon's codex sandbox policy) needs bubblewrap in the
-# image; without it codex fails closed at task time with "bubblewrap is
-# unavailable: no system bwrap was found on PATH". `codex sandbox` needs no
-# credential, so this is a direct image-level check of that dependency.
-if sandbox_out="$(docker exec "$cname_codex" codex sandbox -- /bin/echo codex-sandbox-ok 2>&1)" \
-  && printf '%s' "$sandbox_out" | grep -q 'codex-sandbox-ok'; then
-  ok "codex Linux sandbox runs in the container (bubblewrap present)"
+# workspace-write (the daemon's codex sandbox policy) needs bubblewrap, which
+# needs user, mount and network namespaces. Docker grants that differently per
+# host/kernel: this repo's dev host needs
+# `--security-opt seccomp=unconfined --security-opt apparmor=unconfined`, the
+# GitHub-hosted runner refuses even with `--privileged`
+# (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`). So the
+# assertion splits the two halves:
+#   - image half (ours): bwrap present, `codex-linux-sandbox` helper resolvable,
+#     and no "bubblewrap is unavailable"/"codex-linux-sandbox executable not
+#     found" error → a sandbox *failure* below that names one of those is a
+#     real regression and fails the suite.
+#   - runtime half (the operator's): whether namespaces are permitted here. A
+#     namespace-policy refusal is reported, not failed — see docs/docker.md.
+sandbox_out="$(docker exec "$cname_codex" codex sandbox -- /bin/echo codex-sandbox-ok 2>&1 || true)"
+if printf '%s' "$sandbox_out" | grep -q 'codex-sandbox-ok'; then
+  ok "codex Linux sandbox runs in the container (bubblewrap usable in this runtime)"
+elif printf '%s' "$sandbox_out" | grep -qE 'bwrap: (No permissions to create new namespace|Failed to make / slave|loopback: Failed RTM_NEWADDR)'; then
+  ok "codex sandbox wiring present; this runtime blocks bwrap namespaces ($(printf '%s' "$sandbox_out" | grep -o 'bwrap: .*' | head -1)) — see docs/docker.md"
 else
-  bad "codex sandbox failed inside the container: $sandbox_out"
+  bad "codex sandbox failed in a way that points at the image, not the runtime: $sandbox_out"
 fi
 
 echo "==> Happy path — Codex login projected from a Secret (auth.json mount)"

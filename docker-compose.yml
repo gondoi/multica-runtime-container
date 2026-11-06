@@ -94,14 +94,15 @@ services:
     # with "bwrap: No permissions to create new namespace" / "Failed to make /
     # slave" — and on some kernels "bwrap: loopback: Failed RTM_NEWADDR".
     # These two opts are the minimum on the machine this repo was developed on;
-    # GitHub-hosted runners need --privileged instead. Both relax isolation for
-    # every harness in this container, so this is opt-in, not a default.
+    # other kernels refuse even with `privileged: true` (bwrap loopback setup),
+    # so no single flag set is guaranteed. Both relax isolation for every
+    # harness in this container: opt-in, not a default.
     # Verify after changing anything: docker compose exec runtime \
     #   codex sandbox -- /bin/echo ok
     # security_opt:
     #   - seccomp=unconfined
     #   - apparmor=unconfined
-    # privileged: true   # portable superset when the above is not enough
+    # privileged: true   # try when the above is not enough
     healthcheck:
       test: ["CMD", "/usr/local/bin/ready.sh"]
       interval: 10s
