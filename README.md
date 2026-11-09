@@ -355,6 +355,50 @@ from `downloads.claude.ai` with its manifest SHA-256, Codex from the
 the image. Codex's footprint is ~310 MB on disk, so `INSTALL_CODEX_CLI=false`
 exists for deployments that never run the codex harness.
 
+### Checksum verification and version bumps
+
+Every pinned third-party tarball/binary is verified before it is extracted, and
+the build **fails closed** on a missing or mismatched hash — an unverified
+artifact never reaches the image.
+
+| Pin | Verified against |
+| --- | --- |
+| `MULTICA_VERSION` | `checksums.txt` published with the same GitHub release, fetched during the build (no paired `ARG`) |
+| `CURSOR_AGENT_VERSION` | `CURSOR_AGENT_PACKAGE_SHA256_LINUX_X64` / `_ARM64` in the `Dockerfile` — Cursor publishes no checksum file |
+| `CLAUDE_CODE_VERSION` | `manifest.json` checksum for the platform, from `downloads.claude.ai` |
+| `CODEX_VERSION` | `CODEX_PACKAGE_SHA256_LINUX_X64` / `_ARM64`, from the `openai/codex` release assets |
+
+This is an integrity + pin check, not a signature check: hash and artifact come
+from the same upstream origin. It catches corruption, truncation, a swapped
+artifact, or a half-finished version bump — not a compromised upstream.
+
+Bumping a pinned version:
+
+- **`MULTICA_VERSION`** — bump the `ARG` only. The expected hash is read from
+  that release's `checksums.txt`, so a Renovate bump PR stays self-consistent;
+  the build fails if the release ships no checksums entry for the tarball (or
+  the artifact does not match it).
+- **`CURSOR_AGENT_VERSION`** — bump the `ARG` **and** recompute both pinned
+  hashes, or the build fails with `no pinned SHA-256` / `SHA-256 mismatch`:
+
+  ```bash
+  for a in x64 arm64; do
+    curl -fsSL -o "/tmp/agent-cli-$a.tar.gz" \
+      "https://downloads.cursor.com/lab/<version>/linux/$a/agent-cli-package.tar.gz"
+    sha256sum "/tmp/agent-cli-$a.tar.gz"
+  done
+  ```
+
+- **`CLAUDE_CODE_VERSION` / `CODEX_VERSION`** — same rule: the paired hash
+  `ARG` moves with the version.
+
+A version bump that does not carry its paired hash therefore **fails the
+build**, which is the intent: `boot-seam.yml` rejects the PR before review
+instead of building against an unverified artifact. Recomputing the cursor-agent
+hashes is a manual step today (Cursor publishes no version or checksum feed);
+automating that re-pin on a bump PR is a companion follow-up, not part of this
+build-step change.
+
 Smoke that baseline binaries exist:
 
 ```bash
