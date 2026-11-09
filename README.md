@@ -12,6 +12,8 @@ Published image: `ghcr.io/gondoi/multica-runtime` (public GHCR, anonymous pull).
 
 **Usage docs:** [Running locally with Docker](docs/docker.md) (incl. a working Compose setup) · [Running in Kubernetes](docs/kubernetes.md)
 
+**Maintenance:** [Pinned dependency updates](docs/dependency-updates.md) — how Renovate tracks each pinned `ARG`, the digest-pinned base image, GitHub Actions and the SHA-pinned `FuelLabs/github-actions` reusable workflow. It covers the three pins whose upstreams are not on GitHub releases (`CLAUDE_CODE_VERSION`, `CURSOR_AGENT_VERSION`, `AWS_CLI_VERSION`), the digest/branch-digest scheme, and the manual check for when a feed changes shape.
+
 ### Releases
 
 Versions are cut by [Release Please](https://github.com/googleapis/release-please) from
@@ -59,15 +61,6 @@ Anything that is not a semver tag fails the `prepare` job; there are no per-comm
 | Release version (no `v`) | `0.1.0` |
 
 Deployments (Compose, Kubernetes) should pin a release tag such as `v0.1.0`.
-
-### Dependency updates
-
-All version pins — `ARG *_VERSION` in the `Dockerfile`, the digest-pinned base image,
-GitHub Actions and the SHA-pinned `FuelLabs/github-actions` reusable workflow — are watched by
-Renovate and surface on the repository's Dependency Dashboard issue. No auto-merge: every bump PR
-is reviewed and must pass `boot-seam.yml` (which builds the image). What is watched, why the base
-image is digest-pinned, and which pins still need a manual check:
-[`docs/dependency-updates.md`](docs/dependency-updates.md).
 
 ## What's in the image
 
@@ -364,6 +357,50 @@ from `downloads.claude.ai` with its manifest SHA-256, Codex from the
 the image. Codex's footprint is ~310 MB on disk, so `INSTALL_CODEX_CLI=false`
 exists for deployments that never run the codex harness.
 
+### Checksum verification and version bumps
+
+Every pinned third-party tarball/binary is verified before it is extracted, and
+the build **fails closed** on a missing or mismatched hash — an unverified
+artifact never reaches the image.
+
+| Pin | Verified against |
+| --- | --- |
+| `MULTICA_VERSION` | `checksums.txt` published with the same GitHub release, fetched during the build (no paired `ARG`) |
+| `CURSOR_AGENT_VERSION` | `CURSOR_AGENT_PACKAGE_SHA256_LINUX_X64` / `_ARM64` in the `Dockerfile` — Cursor publishes no checksum file |
+| `CLAUDE_CODE_VERSION` | `manifest.json` checksum for the platform, from `downloads.claude.ai` |
+| `CODEX_VERSION` | `CODEX_PACKAGE_SHA256_LINUX_X64` / `_ARM64`, from the `openai/codex` release assets |
+
+This is an integrity + pin check, not a signature check: hash and artifact come
+from the same upstream origin. It catches corruption, truncation, a swapped
+artifact, or a half-finished version bump — not a compromised upstream.
+
+Bumping a pinned version:
+
+- **`MULTICA_VERSION`** — bump the `ARG` only. The expected hash is read from
+  that release's `checksums.txt`, so a Renovate bump PR stays self-consistent;
+  the build fails if the release ships no checksums entry for the tarball (or
+  the artifact does not match it).
+- **`CURSOR_AGENT_VERSION`** — bump the `ARG` **and** recompute both pinned
+  hashes, or the build fails with `no pinned SHA-256` / `SHA-256 mismatch`:
+
+  ```bash
+  for a in x64 arm64; do
+    curl -fsSL -o "/tmp/agent-cli-$a.tar.gz" \
+      "https://downloads.cursor.com/lab/<version>/linux/$a/agent-cli-package.tar.gz"
+    sha256sum "/tmp/agent-cli-$a.tar.gz"
+  done
+  ```
+
+- **`CLAUDE_CODE_VERSION` / `CODEX_VERSION`** — same rule: the paired hash
+  `ARG` moves with the version.
+
+A version bump that does not carry its paired hash therefore **fails the
+build**, which is the intent: `boot-seam.yml` rejects the PR before review
+instead of building against an unverified artifact. Recomputing the cursor-agent
+hashes is a manual step today (Cursor publishes no version or checksum feed);
+automating that re-pin on a bump PR is a companion follow-up, not part of this
+build-step change.
+
 Smoke that baseline binaries exist:
 
 ```bash
@@ -569,6 +606,7 @@ DNS routing alone is bypassable by hardcoded IPs. No "enforced" claim is made.
 
 - Repos are **not** cloned at image build or at container start. Register them in Multica workspace/project metadata; materialize with `multica repo checkout` during tasks (first task may cold-clone).
 - `asdf` is installed with plugin-install capability; pin tool versions (including AWS CLI) on the workspaces volume, not in the image. Upstream `aws-sso` is image-pinned at a fixed path for stable `credential_process` lines.
+- Image-pinned versions are bumped by Renovate, never auto-merged. Three pins have no GitHub releases to read, so they use `customDatasources` instead — see [Pinned dependency updates](docs/dependency-updates.md) for each source and its manual check.
 - Patterns inspired by community Multica runtimes (`tini`, non-root user, forge HTTPS helpers) — adapted for a Cursor + Claude Code + OpenAI Codex, asdf-based baseline.
 - **Harness ownership is split on purpose.** The Multica daemon (upstream `multica` CLI) owns harness invocation, stream protocol and output parsing; this image owns *provisioning* — install the pinned CLI, gate on its binary + credential, export the daemon's path/auth env. That is why the harness work here is a binary + credential + gate + docs change, not a new parser: adding a harness parser would mean patching the upstream CLI, not this repo.
 - `bin/agent-harness.sh` is the single place that knows what a harness needs (binary, credential vars, path overrides). Adding a harness is one `case` branch per helper plus a Dockerfile install step — the entrypoint does not change (Codex was added exactly that way).

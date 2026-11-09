@@ -19,8 +19,15 @@ FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d
 ARG DEBIAN_FRONTEND=noninteractive
 ARG ASDF_VERSION=v0.20.2
 # Pin Multica CLI + Cursor agent for reproducible builds; bump deliberately.
+# The Multica release publishes `checksums.txt` next to the tarball, so the CLI
+# needs no paired hash ARG (the build fetches and enforces it). Cursor publishes
+# no checksum file, so the cursor-agent tarball is pinned by per-target SHA-256
+# — bump those together with CURSOR_AGENT_VERSION (see README "Checksum
+# verification and version bumps").
 ARG MULTICA_VERSION=0.8.1
 ARG CURSOR_AGENT_VERSION=2026.10.22-27dcf5f
+ARG CURSOR_AGENT_PACKAGE_SHA256_LINUX_X64=85296944e4600a83c4b764f578d1502bf9c416db200d33a593e8f3ecabfdc294
+ARG CURSOR_AGENT_PACKAGE_SHA256_LINUX_ARM64=22a36df9720830668ccd4d707e5190204ab9c8a0efb2f068cc914895f804d3ec
 # Claude Code CLI (native binary, no Node in the image). Pinned + checksum
 # verified against downloads.claude.ai's manifest. INSTALL_CLAUDE_CLI=false
 # produces a Cursor-only image (~330 MB smaller) for deployments that never run
@@ -86,29 +93,58 @@ RUN arch="$(dpkg --print-architecture)" && \
       | tar -xz -C /usr/local/bin asdf && \
     chmod +x /usr/local/bin/asdf
 
-# ── Multica CLI (pinned release tarball) ─────────────────────────────────
-RUN arch="$(dpkg --print-architecture)" && \
+# ── Pinned-tarball verifier (shared by the multica/cursor installs) ──────
+COPY bin/verify-sha256.sh /usr/local/bin/verify-sha256.sh
+RUN chmod 0755 /usr/local/bin/verify-sha256.sh
+
+# ── Multica CLI (pinned release tarball, SHA-256 verified) ───────────────
+# The release ships `checksums.txt` alongside the tarball, so the expected hash
+# is read from the same release rather than duplicated in an ARG: a
+# MULTICA_VERSION bump stays self-consistent, while a release that drops,
+# renames or corrupts the tarball (or the checksums file) fails the build
+# instead of installing bytes nobody verified.
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
     case "$arch" in \
       amd64) m_arch=amd64 ;; \
       arm64) m_arch=arm64 ;; \
       *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
-    esac && \
-    curl -fsSL "https://github.com/multica-ai/multica/releases/download/v${MULTICA_VERSION}/multica-cli-${MULTICA_VERSION}-linux-${m_arch}.tar.gz" \
-      | tar -xz -C /usr/local/bin multica && \
-    chmod +x /usr/local/bin/multica
+    esac; \
+    m_base="https://github.com/multica-ai/multica/releases/download/v${MULTICA_VERSION}"; \
+    m_tar="multica-cli-${MULTICA_VERSION}-linux-${m_arch}.tar.gz"; \
+    mkdir -p /tmp/multica; \
+    curl -fsSL "$m_base/checksums.txt" -o /tmp/multica/checksums.txt; \
+    m_sha="$(awk -v f="$m_tar" '$2 == f { print $1; exit }' /tmp/multica/checksums.txt)"; \
+    curl -fsSL "$m_base/$m_tar" -o "/tmp/multica/$m_tar"; \
+    /usr/local/bin/verify-sha256.sh "/tmp/multica/$m_tar" "$m_sha" \
+      "multica CLI ${MULTICA_VERSION} (linux-${m_arch})"; \
+    tar -xzf "/tmp/multica/$m_tar" -C /usr/local/bin multica; \
+    rm -rf /tmp/multica; \
+    chmod 0755 /usr/local/bin/multica
 
-# ── cursor-agent (pinned lab package) ────────────────────────────────────
-RUN arch="$(dpkg --print-architecture)" && \
+# ── cursor-agent (pinned lab package, SHA-256 verified) ──────────────────
+# Cursor publishes no checksum artifact for `agent-cli-package.tar.gz`, so the
+# hash of the exact pinned build is recorded per target above and enforced here
+# before extraction. A CURSOR_AGENT_VERSION bump that does not also update the
+# matching CURSOR_AGENT_PACKAGE_SHA256_LINUX_* value fails the build.
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
     case "$arch" in \
-      amd64) c_arch=x64 ;; \
-      arm64) c_arch=arm64 ;; \
+      amd64) c_arch=x64; c_sha="${CURSOR_AGENT_PACKAGE_SHA256_LINUX_X64}" ;; \
+      arm64) c_arch=arm64; c_sha="${CURSOR_AGENT_PACKAGE_SHA256_LINUX_ARM64}" ;; \
       *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
-    esac && \
-    mkdir -p /home/agent/.local/share/cursor-agent/versions/${CURSOR_AGENT_VERSION} && \
+    esac; \
+    mkdir -p /tmp/cursor \
+      /home/agent/.local/share/cursor-agent/versions/${CURSOR_AGENT_VERSION}; \
     curl -fsSL "https://downloads.cursor.com/lab/${CURSOR_AGENT_VERSION}/linux/${c_arch}/agent-cli-package.tar.gz" \
-      | tar --strip-components=1 -xzf - -C /home/agent/.local/share/cursor-agent/versions/${CURSOR_AGENT_VERSION} && \
-    ln -sf /home/agent/.local/share/cursor-agent/versions/${CURSOR_AGENT_VERSION}/cursor-agent /usr/local/bin/cursor-agent && \
-    ln -sf /home/agent/.local/share/cursor-agent/versions/${CURSOR_AGENT_VERSION}/cursor-agent /usr/local/bin/agent && \
+      -o /tmp/cursor/agent-cli-package.tar.gz; \
+    /usr/local/bin/verify-sha256.sh /tmp/cursor/agent-cli-package.tar.gz "$c_sha" \
+      "cursor-agent ${CURSOR_AGENT_VERSION} (linux-${c_arch})"; \
+    tar --strip-components=1 -xzf /tmp/cursor/agent-cli-package.tar.gz \
+      -C /home/agent/.local/share/cursor-agent/versions/${CURSOR_AGENT_VERSION}; \
+    rm -rf /tmp/cursor; \
+    ln -sf /home/agent/.local/share/cursor-agent/versions/${CURSOR_AGENT_VERSION}/cursor-agent /usr/local/bin/cursor-agent; \
+    ln -sf /home/agent/.local/share/cursor-agent/versions/${CURSOR_AGENT_VERSION}/cursor-agent /usr/local/bin/agent; \
     chown -R agent:agent /home/agent/.local
 
 # ── Claude Code CLI (pinned native binary; no Node, no baked credentials) ──

@@ -21,6 +21,10 @@ docker build --build-arg INSTALL_CLAUDE_CLI=false -t multica-runtime:local-curso
 docker build --build-arg INSTALL_CODEX_CLI=false -t multica-runtime:local-nocodex .
 ```
 
+Every pinned tarball/agent binary is checksum-verified before extraction, and a
+version bump that does not carry its paired SHA-256 fails the build. Bump
+recipes: [Checksum verification and version bumps](../README.md#checksum-verification-and-version-bumps).
+
 ### Smoke test (no secrets, no daemon)
 
 Verify the baseline binaries exist without booting the daemon:
