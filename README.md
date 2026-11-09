@@ -60,6 +60,15 @@ Anything that is not a semver tag fails the `prepare` job; there are no per-comm
 
 Deployments (Compose, Kubernetes) should pin a release tag such as `v0.1.0`.
 
+### Dependency updates
+
+All version pins — `ARG *_VERSION` in the `Dockerfile`, the digest-pinned base image,
+GitHub Actions and the SHA-pinned `FuelLabs/github-actions` reusable workflow — are watched by
+Renovate and surface on the repository's Dependency Dashboard issue. No auto-merge: every bump PR
+is reviewed and must pass `boot-seam.yml` (which builds the image). What is watched, why the base
+image is digest-pinned, and which pins still need a manual check:
+[`docs/dependency-updates.md`](docs/dependency-updates.md).
+
 ## What's in the image
 
 | Component | Role |
