@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.4.0](https://github.com/gondoi/multica-runtime-container/compare/v0.3.0...v0.4.0) (2026-11-09)
+
+
+### Features
+
+* **ci:** track remaining pins with renovate custom managers ([c9d6fa3](https://github.com/gondoi/multica-runtime-container/commit/c9d6fa3016fcff5e7185489a5e0225e5ded524eb))
+* **harness:** add OpenAI Codex agent CLI harness ([0faf452](https://github.com/gondoi/multica-runtime-container/commit/0faf45288b802fd7a9e5072173d40a4d9866ddf3))
+* **harness:** mask unselected harness binaries from the daemon PATH ([c00aaca](https://github.com/gondoi/multica-runtime-container/commit/c00aaca7232f92e54c307c50bb53db40263b95f2))
+* **renovate:** track non-GitHub agent pins with custom datasources ([7942412](https://github.com/gondoi/multica-runtime-container/commit/7942412ef8c10f867e9a0c94d7b34e13616b4cdd))
+
+
+### Bug Fixes
+
+* **docker:** checksum-verify multica-cli and cursor-agent installs ([650b263](https://github.com/gondoi/multica-runtime-container/commit/650b263cf7c4804da29dc1448ee095da16ed458e))
+* **test:** run the codex sandbox seam check with namespace privileges ([d6aaf2f](https://github.com/gondoi/multica-runtime-container/commit/d6aaf2fd4a2c6be567d4cdc8dc504279c2e19f14))
+* **test:** separate codex sandbox image defects from runtime policy ([4b59310](https://github.com/gondoi/multica-runtime-container/commit/4b59310490034f17426aff4f4085813bd92440da))
+
 ## [0.3.0](https://github.com/gondoi/multica-runtime-container/compare/v0.2.0...v0.3.0) (2026-11-05)
 
 
