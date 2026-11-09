@@ -31,7 +31,7 @@ jobs:
   unit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Run unit suites (no Docker, no network)
         run: |
           set -euo pipefail
@@ -41,7 +41,7 @@ jobs:
   seam:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Run boot seam
         run: |
           set -euo pipefail
