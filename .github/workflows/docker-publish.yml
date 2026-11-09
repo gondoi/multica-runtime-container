@@ -103,7 +103,7 @@ jobs:
       contents: read
     steps:
       - name: Login to GHCR (needed if package still private)
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
