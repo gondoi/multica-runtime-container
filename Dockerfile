@@ -16,7 +16,7 @@ FROM debian:bookworm-slim
 ARG DEBIAN_FRONTEND=noninteractive
 ARG ASDF_VERSION=v0.20.2
 # Pin Multica CLI + Cursor agent for reproducible builds; bump deliberately.
-ARG MULTICA_VERSION=0.8.0
+ARG MULTICA_VERSION=0.8.1
 ARG CURSOR_AGENT_VERSION=2026.10.22-27dcf5f
 # Claude Code CLI (native binary, no Node in the image). Pinned + checksum
 # verified against downloads.claude.ai's manifest. INSTALL_CLAUDE_CLI=false
