@@ -12,6 +12,8 @@ Published image: `ghcr.io/gondoi/multica-runtime` (public GHCR, anonymous pull).
 
 **Usage docs:** [Running locally with Docker](docs/docker.md) (incl. a working Compose setup) · [Running in Kubernetes](docs/kubernetes.md)
 
+**Maintenance:** [Pinned dependency updates](docs/dependency-updates.md) — how Renovate tracks each pinned `ARG`, including the three pins whose upstreams are not on GitHub releases (`CLAUDE_CODE_VERSION`, `CURSOR_AGENT_VERSION`, `AWS_CLI_VERSION`), and the manual check for when a feed changes shape.
+
 ### Releases
 
 Versions are cut by [Release Please](https://github.com/googleapis/release-please) from
@@ -560,6 +562,7 @@ DNS routing alone is bypassable by hardcoded IPs. No "enforced" claim is made.
 
 - Repos are **not** cloned at image build or at container start. Register them in Multica workspace/project metadata; materialize with `multica repo checkout` during tasks (first task may cold-clone).
 - `asdf` is installed with plugin-install capability; pin tool versions (including AWS CLI) on the workspaces volume, not in the image. Upstream `aws-sso` is image-pinned at a fixed path for stable `credential_process` lines.
+- Image-pinned versions are bumped by Renovate, never auto-merged. Three pins have no GitHub releases to read, so they use `customDatasources` instead — see [Pinned dependency updates](docs/dependency-updates.md) for each source and its manual check.
 - Patterns inspired by community Multica runtimes (`tini`, non-root user, forge HTTPS helpers) — adapted for a Cursor + Claude Code + OpenAI Codex, asdf-based baseline.
 - **Harness ownership is split on purpose.** The Multica daemon (upstream `multica` CLI) owns harness invocation, stream protocol and output parsing; this image owns *provisioning* — install the pinned CLI, gate on its binary + credential, export the daemon's path/auth env. That is why the harness work here is a binary + credential + gate + docs change, not a new parser: adding a harness parser would mean patching the upstream CLI, not this repo.
 - `bin/agent-harness.sh` is the single place that knows what a harness needs (binary, credential vars, path overrides). Adding a harness is one `case` branch per helper plus a Dockerfile install step — the entrypoint does not change (Codex was added exactly that way).
