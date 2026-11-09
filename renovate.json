@@ -2,7 +2,7 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
   "dependencyDashboard": true,
-  "dependencyDashboardHeader": "Non-GitHub pins (Claude Code CLI, cursor-agent, AWS CLI v2) are tracked through custom datasources. Sources and manual check commands: `docs/dependency-updates.md`.",
+  "dependencyDashboardHeader": "Non-GitHub pins (Claude Code CLI, cursor-agent, AWS CLI v2) are tracked through custom datasources; the Debian base image is digest-pinned and the FuelLabs reusable workflow is tracked by branch digest. Sources and manual check commands: `docs/dependency-updates.md`.",
   "automerge": false,
   "customDatasources": {
     "claude-code-releases": {
@@ -37,6 +37,35 @@
     },
     {
       "customType": "regex",
+      "description": "asdf pin (ARG ASDF_VERSION in Dockerfile) -> asdf-vm/asdf GitHub releases. Upstream tags are `vX.Y.Z` and the ARG keeps the `v` (the download URL is built from the raw value), so no extractVersionTemplate is used: the release version is the tag text and is written back verbatim. semver-coerced only orders the `v`-prefixed tags; it does not rewrite them.",
+      "managerFilePatterns": ["/^Dockerfile$/"],
+      "matchStrings": ["ARG ASDF_VERSION=(?<currentValue>[^\\s]+)"],
+      "depNameTemplate": "asdf-vm/asdf",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver-coerced"
+    },
+    {
+      "customType": "regex",
+      "description": "GitHub CLI pin (ARG GH_VERSION in Dockerfile) -> cli/cli GitHub releases. Tag is `vX.Y.Z`, the ARG holds `X.Y.Z` (the download URL adds the `v` itself), so extractVersionTemplate strips the prefix.",
+      "managerFilePatterns": ["/^Dockerfile$/"],
+      "matchStrings": ["ARG GH_VERSION=(?<currentValue>[^\\s]+)"],
+      "depNameTemplate": "cli/cli",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver",
+      "extractVersionTemplate": "^v?(?<version>\\d+\\.\\d+\\.\\d+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "aws-sso-cli pin (ARG AWS_SSO_VERSION in Dockerfile) -> synfinatic/aws-sso-cli GitHub releases. Tag is `vX.Y.Z`, the ARG holds `X.Y.Z` (the download URL adds the `v` itself), so extractVersionTemplate strips the prefix.",
+      "managerFilePatterns": ["/^Dockerfile$/"],
+      "matchStrings": ["ARG AWS_SSO_VERSION=(?<currentValue>[^\\s]+)"],
+      "depNameTemplate": "synfinatic/aws-sso-cli",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver",
+      "extractVersionTemplate": "^v?(?<version>\\d+\\.\\d+\\.\\d+)$"
+    },
+    {
+      "customType": "regex",
       "description": "Claude Code CLI pin (ARG CLAUDE_CODE_VERSION in Dockerfile) -> downloads.claude.ai latest-version endpoint. That body is one line, and the plain fetcher turns lines into releases, so one release comes back.",
       "managerFilePatterns": ["/^Dockerfile$/"],
       "matchStrings": ["ARG CLAUDE_CODE_VERSION=(?<currentValue>[^\\s]+)"],
@@ -61,6 +90,16 @@
       "depNameTemplate": "aws-cli-v2",
       "datasourceTemplate": "custom.aws-cli-changelog",
       "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "description": "FuelLabs/github-actions reusable workflow, SHA-pinned in docker-publish.yml. Upstream publishes no tags and no releases, so the built-in github-actions manager marks the ref `unversioned-reference` (enabled: false) and it never reaches the dashboard. Track the master branch tip instead: git-refs datasource + currentDigest, so a moved branch yields a digest bump that rewrites only the SHA.",
+      "managerFilePatterns": ["/^\\.github/workflows/.*\\.ya?ml$/"],
+      "matchStrings": ["uses:\\s+FuelLabs/github-actions/\\S*@(?<currentDigest>[0-9a-f]{40})"],
+      "currentValueTemplate": "master",
+      "depNameTemplate": "FuelLabs/github-actions",
+      "packageNameTemplate": "https://github.com/FuelLabs/github-actions",
+      "datasourceTemplate": "git-refs"
     }
   ]
 }

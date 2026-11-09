@@ -12,7 +12,7 @@ Published image: `ghcr.io/gondoi/multica-runtime` (public GHCR, anonymous pull).
 
 **Usage docs:** [Running locally with Docker](docs/docker.md) (incl. a working Compose setup) · [Running in Kubernetes](docs/kubernetes.md)
 
-**Maintenance:** [Pinned dependency updates](docs/dependency-updates.md) — how Renovate tracks each pinned `ARG`, including the three pins whose upstreams are not on GitHub releases (`CLAUDE_CODE_VERSION`, `CURSOR_AGENT_VERSION`, `AWS_CLI_VERSION`), and the manual check for when a feed changes shape.
+**Maintenance:** [Pinned dependency updates](docs/dependency-updates.md) — how Renovate tracks each pinned `ARG`, the digest-pinned base image, GitHub Actions and the SHA-pinned `FuelLabs/github-actions` reusable workflow. It covers the three pins whose upstreams are not on GitHub releases (`CLAUDE_CODE_VERSION`, `CURSOR_AGENT_VERSION`, `AWS_CLI_VERSION`), the digest/branch-digest scheme, and the manual check for when a feed changes shape.
 
 ### Releases
 

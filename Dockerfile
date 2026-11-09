@@ -11,7 +11,10 @@
 # Shell:  docker run -it --rm multica-runtime:local
 #
 # Base: Debian bookworm-slim (stack-agnostic; language toolchains via asdf later).
-FROM debian:bookworm-slim
+# Digest-pinned so the base image is reproducible and Renovate can propose digest
+# bumps (see docs/dependency-updates.md). Bump the digest deliberately: each
+# digest bump carries Debian security updates.
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG ASDF_VERSION=v0.20.2
