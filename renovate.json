@@ -2,7 +2,28 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
   "dependencyDashboard": true,
+  "dependencyDashboardHeader": "Non-GitHub pins (Claude Code CLI, cursor-agent, AWS CLI v2) are tracked through custom datasources. Sources and manual check commands: `docs/dependency-updates.md`.",
   "automerge": false,
+  "customDatasources": {
+    "claude-code-releases": {
+      "description": "Claude Code CLI: downloads.claude.ai serves the newest published version as a plain-text body at /latest.",
+      "defaultRegistryUrlTemplate": "https://downloads.claude.ai/claude-code-releases/latest",
+      "format": "plain"
+    },
+    "cursor-agent-lab": {
+      "description": "cursor-agent CLI: downloads.cursor.com exposes no listing or feed, but Cursor's own installer script hardcodes the current lab build path, so the version is extracted from that script body.",
+      "defaultRegistryUrlTemplate": "https://cursor.com/install",
+      "format": "plain",
+      "transformTemplates": [
+        "{\"releases\":[{\"version\": $match($join(releases.version, \"\\n\"), /downloads\\.cursor\\.com\\/lab\\/([0-9.]+-[0-9a-f]+)/)[0].groups[0]}]}"
+      ]
+    },
+    "aws-cli-changelog": {
+      "description": "AWS CLI v2: aws/aws-cli's own CHANGELOG.rst lists every released version as its own line, so the changelog doubles as the version list.",
+      "defaultRegistryUrlTemplate": "https://raw.githubusercontent.com/aws/aws-cli/v2/CHANGELOG.rst",
+      "format": "plain"
+    }
+  },
   "customManagers": [
     {
       "customType": "regex",
@@ -13,6 +34,33 @@
       "datasourceTemplate": "github-releases",
       "versioningTemplate": "semver",
       "extractVersionTemplate": "^v?(?<version>\\d+\\.\\d+\\.\\d+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "Claude Code CLI pin (ARG CLAUDE_CODE_VERSION in Dockerfile) -> downloads.claude.ai latest-version endpoint. That body is one line, and the plain fetcher turns lines into releases, so one release comes back.",
+      "managerFilePatterns": ["/^Dockerfile$/"],
+      "matchStrings": ["ARG CLAUDE_CODE_VERSION=(?<currentValue>[^\\s]+)"],
+      "depNameTemplate": "claude-code-cli",
+      "datasourceTemplate": "custom.claude-code-releases",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "description": "cursor-agent CLI pin (ARG CURSOR_AGENT_VERSION in Dockerfile) -> version pulled out of Cursor's installer script. CalVer `YYYY.MM.DD-<gitsha>`; loose versioning orders it.",
+      "managerFilePatterns": ["/^Dockerfile$/"],
+      "matchStrings": ["ARG CURSOR_AGENT_VERSION=(?<currentValue>[^\\s]+)"],
+      "depNameTemplate": "cursor-agent-cli",
+      "datasourceTemplate": "custom.cursor-agent-lab",
+      "versioningTemplate": "loose"
+    },
+    {
+      "customType": "regex",
+      "description": "AWS CLI v2 pin (ARG AWS_CLI_VERSION in Dockerfile) -> every version heading in aws/aws-cli CHANGELOG.rst. semver versioning discards the non-version lines.",
+      "managerFilePatterns": ["/^Dockerfile$/"],
+      "matchStrings": ["ARG AWS_CLI_VERSION=(?<currentValue>[^\\s]+)"],
+      "depNameTemplate": "aws-cli-v2",
+      "datasourceTemplate": "custom.aws-cli-changelog",
+      "versioningTemplate": "semver"
     }
   ]
 }
