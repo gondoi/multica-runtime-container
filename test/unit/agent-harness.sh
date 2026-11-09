@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Unit check: bin/agent-harness.sh harness selection + boot gates + PATH mask
 # (cursor → cursor-agent + CURSOR_API_KEY; claude → claude + an Anthropic
-# credential; unselected harnesses → removed from PATH). No Docker, no network,
-# no real binaries: stub executables on a throwaway PATH stand in for
-# cursor-agent/claude.
+# credential; codex → codex + OPENAI_API_KEY (projected into
+# $CODEX_HOME/auth.json) or a pre-provisioned auth.json; unselected harnesses →
+# removed from PATH). No Docker, no network, no real binaries: stub executables
+# on a throwaway PATH stand in for cursor-agent/claude/codex.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -19,12 +20,44 @@ bad() { printf 'FAIL  %s\n' "$*"; fail=$((fail + 1)); }
 chmod +x "$LIB"
 
 BASE_PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-mkdir -p "$WORK/full" "$WORK/cursor-only" "$WORK/empty"
+mkdir -p "$WORK/full" "$WORK/cursor-only" "$WORK/empty" "$WORK/all"
 printf '#!/bin/sh\necho stub-claude\n' >"$WORK/full/claude"
 printf '#!/bin/sh\necho stub-cursor-agent\n' >"$WORK/full/cursor-agent"
 chmod +x "$WORK/full/claude" "$WORK/full/cursor-agent"
 cp "$WORK/full/cursor-agent" "$WORK/cursor-only/cursor-agent"
 chmod +x "$WORK/cursor-only/cursor-agent"
+
+# Codex stand-in. The only codex behaviour the gate depends on is the documented
+# credential writer `codex login --with-api-key`, which writes $CODEX_HOME/auth.json
+# (the real CLI also writes mode 0600 and prints "API key saved.").
+cat >"$WORK/codex-stub" <<'STUB'
+#!/bin/sh
+if [ "${1:-}" = login ] && [ "${2:-}" = --with-api-key ]; then
+  key="$(cat)"
+  if [ -z "${CODEX_HOME:-}" ]; then
+    echo 'error: CODEX_HOME is not set' >&2
+    exit 1
+  fi
+  mkdir -p "$CODEX_HOME" || exit 1
+  umask 077
+  printf '{\n  "auth_mode": "apikey",\n  "OPENAI_API_KEY": "%s"\n}\n' "$key" >"$CODEX_HOME/auth.json" || exit 1
+  printf 'API key saved.\n'
+  exit 0
+fi
+printf 'stub-codex\n'
+STUB
+chmod +x "$WORK/codex-stub"
+cp "$WORK/full/claude" "$WORK/full/cursor-agent" "$WORK/all/"
+cp "$WORK/codex-stub" "$WORK/all/codex"
+chmod +x "$WORK/all/codex"
+
+# Same image layout, but `codex login --with-api-key` fails: the gate must fail
+# closed rather than start a daemon whose credential was never written.
+mkdir -p "$WORK/all-bad-login"
+cp "$WORK/full/claude" "$WORK/full/cursor-agent" "$WORK/all-bad-login/"
+printf '#!/bin/sh\nif [ "${1:-}" = login ]; then echo "login exploded" >&2; exit 1; fi\nprintf "stub-codex\\n"\n' \
+  >"$WORK/all-bad-login/codex"
+chmod +x "$WORK/all-bad-login/codex"
 
 # Probes source the library with a clean harness env (so the suite is
 # independent of the shell it runs in). Functions do not survive a child shell,
@@ -50,22 +83,46 @@ harness_gate || rc=$?
 printf 'rc=%s\n' "$rc"
 printf 'cursor_path=%s\n' "${MULTICA_CURSOR_PATH:-}"
 printf 'claude_path=%s\n' "${MULTICA_CLAUDE_PATH:-}"
+printf 'codex_path=%s\n' "${MULTICA_CODEX_PATH:-}"
 printf 'autoupdater=%s\n' "${DISABLE_AUTOUPDATER:-}"
+# Codex credential projection (never the key itself — only its presence/shape).
+auth="$(harness_codex_auth_json)"
+if [ -s "$auth" ]; then
+  printf 'codex_auth=present\n'
+  printf 'codex_auth_mode=%s\n' "$(sed -n 's/.*"auth_mode"[[:space:]]*:[[:space:]]*"\([A-Za-z]*\)".*/\1/p' "$auth" | head -1)"
+  printf 'codex_auth_perm=%s\n' "$(stat -c '%a' "$auth" 2>/dev/null || printf unknown)"
+  if [ -n "${OPENAI_API_KEY:-}" ] && grep -qF -- "$OPENAI_API_KEY" "$auth"; then
+    printf 'codex_key_projected=yes\n'
+  else
+    printf 'codex_key_projected=no\n'
+  fi
+else
+  printf 'codex_auth=absent\n'
+fi
 PROBE
 chmod +x "$WORK/probe-gate.sh"
 
 # run_gate <path-dir> [VAR=value ...] → probe output (stderr folded in)
+# CODEX_HOME always points inside $WORK so the suite never touches a real
+# ~/.codex. The default home is wiped per case; CASE_CODEX_HOME pre-seeds one
+# (used by the pre-provisioned-auth.json cases).
 HARNESS_VARS=(-u MULTICA_AGENT_CLI -u CURSOR_API_KEY -u ANTHROPIC_API_KEY
-  -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_AUTH_TOKEN
-  -u MULTICA_CURSOR_PATH -u MULTICA_CLAUDE_PATH -u DISABLE_AUTOUPDATER
+  -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_AUTH_TOKEN -u OPENAI_API_KEY
+  -u MULTICA_CURSOR_PATH -u MULTICA_CLAUDE_PATH -u MULTICA_CODEX_PATH
+  -u DISABLE_AUTOUPDATER -u CODEX_HOME
   -u MULTICA_HARNESS_MASK_DIR)
 
 run_gate() {
   # Caller-supplied VAR=value pairs land after the -u scrub, so each case starts
   # from a clean harness env regardless of the invoking shell.
   local pathdir="$1"
+  local chome="${CASE_CODEX_HOME:-$WORK/codex-home}"
   shift
-  env "${HARNESS_VARS[@]}" PATH="$pathdir:$BASE_PATH" LIB="$LIB" "$@" \
+  if [ -z "${CASE_CODEX_HOME:-}" ]; then
+    rm -rf "$chome"
+    mkdir -p "$chome"
+  fi
+  env "${HARNESS_VARS[@]}" PATH="$pathdir:$BASE_PATH" LIB="$LIB" CODEX_HOME="$chome" "$@" \
     "$WORK/probe-gate.sh" 2>&1
 }
 
@@ -108,8 +165,10 @@ else
   bad "default selection is not cursor: $(selected "$WORK/full")"
 fi
 
-for spec in "claude:claude" "cursor,claude:cursor,claude" "claude cursor:claude,cursor" \
-  "CLAUDE:claude" "claude,claude:claude" "cursor, claude :cursor,claude"; do
+for spec in "claude:claude" "codex:codex" "cursor,claude:cursor,claude" "claude cursor:claude,cursor" \
+  "cursor,claude,codex:cursor,claude,codex" "claude codex:claude,codex" \
+  "CLAUDE:claude" "CODEX:codex" "claude,claude:claude" "codex,codex:codex" \
+  "cursor, claude :cursor,claude"; do
   want="${spec##*:}"
   value="${spec%:*}"
   got="$(selected "$WORK/full" MULTICA_AGENT_CLI="$value")"
@@ -146,6 +205,30 @@ expect_gate_ok "claude gate accepts ANTHROPIC_AUTH_TOKEN (gateway)" \
 expect_gate_ok "cursor,claude gate passes with both credentials" \
   "$WORK/full" MULTICA_AGENT_CLI=cursor,claude \
   CURSOR_API_KEY=cursor_test ANTHROPIC_API_KEY=sk-ant-test
+
+expect_gate_ok "codex gate passes with OPENAI_API_KEY + codex binary" \
+  "$WORK/all" MULTICA_AGENT_CLI=codex OPENAI_API_KEY=sk-codex-test
+
+# Pre-provisioned auth.json (what `codex login` writes, API-key or OAuth) must
+# satisfy the gate without any OPENAI_API_KEY in the environment.
+CASE_CODEX_HOME="$WORK/codex-home-preprovisioned"
+mkdir -p "$CASE_CODEX_HOME"
+printf '{\n  "auth_mode": "apikey",\n  "OPENAI_API_KEY": "sk-preprovisioned"\n}\n' \
+  >"$CASE_CODEX_HOME/auth.json"
+expect_gate_ok "codex gate passes with a pre-provisioned auth.json and no key" \
+  "$WORK/all" MULTICA_AGENT_CLI=codex
+out="$(run_gate "$WORK/all" MULTICA_AGENT_CLI=codex)"
+unset CASE_CODEX_HOME
+if printf '%s' "$out" | grep -qx 'codex_auth=present' \
+  && printf '%s' "$out" | grep -qx 'codex_key_projected=no'; then
+  ok "pre-provisioned auth.json is left untouched (no key to project)"
+else
+  bad "pre-provisioned auth.json was overwritten or lost: $out"
+fi
+
+expect_gate_ok "cursor,claude,codex gate passes with all three credentials" \
+  "$WORK/all" MULTICA_AGENT_CLI=cursor,claude,codex \
+  CURSOR_API_KEY=cursor_test ANTHROPIC_API_KEY=sk-ant-test OPENAI_API_KEY=sk-codex-test
 
 # Regression guard: a Claude-only deployment must not need a Cursor key, and
 # the gate must say which harness it accepted.
@@ -185,6 +268,32 @@ expect_gate_fail "unknown MULTICA_AGENT_CLI fails the gate" \
 expect_gate_fail "empty MULTICA_AGENT_CLI fails the gate" \
   "MULTICA_AGENT_CLI is empty" "$WORK/full" MULTICA_AGENT_CLI=" "
 
+expect_gate_fail "missing codex credential fails the gate" \
+  "codex harness auth required" "$WORK/all" MULTICA_AGENT_CLI=codex
+
+expect_gate_fail "missing codex credential names OPENAI_API_KEY" \
+  "OPENAI_API_KEY" "$WORK/all" MULTICA_AGENT_CLI=codex
+
+expect_gate_fail "cursor credential does not satisfy the codex gate" \
+  "codex harness auth required" "$WORK/all" \
+  MULTICA_AGENT_CLI=codex CURSOR_API_KEY=cursor_test ANTHROPIC_API_KEY=sk-ant-test
+
+expect_gate_fail "missing codex binary fails the gate" \
+  "required binary not on PATH: codex" "$WORK/full" \
+  MULTICA_AGENT_CLI=codex OPENAI_API_KEY=sk-codex-test
+
+expect_gate_fail "missing claude binary hint names INSTALL_CLAUDE_CLI" \
+  "build with INSTALL_CLAUDE_CLI=true" "$WORK/cursor-only" \
+  MULTICA_AGENT_CLI=claude ANTHROPIC_API_KEY=sk-ant-test
+
+expect_gate_fail "missing codex binary hint names INSTALL_CODEX_CLI" \
+  "build with INSTALL_CODEX_CLI=true" "$WORK/full" \
+  MULTICA_AGENT_CLI=codex OPENAI_API_KEY=sk-codex-test
+
+expect_gate_fail "codex credential projection failure fails the gate (fail closed)" \
+  "codex login --with-api-key" "$WORK/all-bad-login" \
+  MULTICA_AGENT_CLI=codex OPENAI_API_KEY=sk-codex-test
+
 # ── exported env for the daemon ──────────────────────────────────────────
 out="$(run_gate "$WORK/full" MULTICA_AGENT_CLI=claude ANTHROPIC_API_KEY=sk-ant-test)"
 if printf '%s' "$out" | grep -qx "claude_path=$WORK/full/claude" \
@@ -210,7 +319,43 @@ else
   bad "MULTICA_CLAUDE_PATH override not honoured: $out"
 fi
 
-if printf '%s' "$out" | grep -qi 'sk-ant-test'; then
+out="$(run_gate "$WORK/all" MULTICA_AGENT_CLI=codex OPENAI_API_KEY=sk-codex-test)"
+if printf '%s' "$out" | grep -qx "codex_path=$WORK/all/codex" \
+  && printf '%s' "$out" | grep -qx 'codex_auth=present' \
+  && printf '%s' "$out" | grep -qx 'codex_auth_mode=apikey' \
+  && printf '%s' "$out" | grep -qx 'codex_auth_perm=600' \
+  && printf '%s' "$out" | grep -qx 'codex_key_projected=yes' \
+  && printf '%s' "$out" | grep -qx 'autoupdater='; then
+  ok "codex selection pins MULTICA_CODEX_PATH and projects OPENAI_API_KEY → \$CODEX_HOME/auth.json (0600, auth_mode=apikey)"
+else
+  bad "codex selection did not pin its path / project the credential: $out"
+fi
+
+# An OAuth login (auth_mode != apikey) must never be clobbered by an API key
+# that happens to sit in the environment.
+CASE_CODEX_HOME="$WORK/codex-home-oauth"
+mkdir -p "$CASE_CODEX_HOME"
+printf '{\n  "auth_mode": "chatgpt",\n  "tokens": {\n    "access_token": "oauth-not-real"\n  }\n}\n' \
+  >"$CASE_CODEX_HOME/auth.json"
+out="$(run_gate "$WORK/all" MULTICA_AGENT_CLI=codex OPENAI_API_KEY=sk-codex-test)"
+unset CASE_CODEX_HOME
+if printf '%s' "$out" | grep -qx 'codex_auth_mode=chatgpt' \
+  && printf '%s' "$out" | grep -qx 'codex_key_projected=no' \
+  && printf '%s' "$out" | grep -q 'keeping existing'; then
+  ok "codex keeps an existing non-API-key auth.json (OAuth login) and says why"
+else
+  bad "codex overwrote an OAuth auth.json with the env API key: $out"
+fi
+
+out="$(run_gate "$WORK/all" MULTICA_AGENT_CLI=codex OPENAI_API_KEY=sk-codex-test \
+  MULTICA_CODEX_PATH="$WORK/all/codex") "
+if printf '%s' "$out" | grep -qx "codex_path=$WORK/all/codex"; then
+  ok "explicit MULTICA_CODEX_PATH override is honoured"
+else
+  bad "MULTICA_CODEX_PATH override not honoured: $out"
+fi
+
+if printf '%s' "$out" | grep -qiE 'sk-ant-test|sk-codex-test'; then
   bad "gate output leaked a credential value"
 else
   ok "gate output never echoes credential values"
@@ -223,8 +368,10 @@ fi
 mkdir -p "$WORK/aliased" "$WORK/agent-other" "$WORK/two-a" "$WORK/two-b"
 cp "$WORK/full/claude" "$WORK/aliased/claude"
 cp "$WORK/full/cursor-agent" "$WORK/aliased/cursor-agent"
+cp "$WORK/codex-stub" "$WORK/aliased/codex"
 ln -sf "$WORK/aliased/cursor-agent" "$WORK/aliased/agent"
-chmod +x "$WORK/aliased/claude" "$WORK/aliased/cursor-agent"
+ln -sf "$WORK/aliased/codex" "$WORK/aliased/codex-linux-sandbox"
+chmod +x "$WORK/aliased/claude" "$WORK/aliased/cursor-agent" "$WORK/aliased/codex"
 # `agent` here is an unrelated tool (different real file) — must stay visible.
 printf '#!/bin/sh\necho unrelated-agent\n' >"$WORK/agent-other/agent"
 cp "$WORK/aliased/claude" "$WORK/agent-other/claude"
@@ -241,7 +388,7 @@ source "$LIB"
 for _ in $(seq 1 "${MASK_RUNS:-1}"); do
   harness_mask_unselected
   printf 'path=%s\n' "$PATH"
-  for b in claude cursor-agent agent; do
+  for b in claude cursor-agent codex codex-linux-sandbox agent; do
     if p="$(command -v "$b" 2>/dev/null)"; then
       printf 'bin_%s=%s\n' "$b" "$p"
     else
@@ -285,19 +432,31 @@ fi
 out="$(mask_path "$WORK/aliased" MULTICA_AGENT_CLI=claude ANTHROPIC_API_KEY=sk-ant-test)"
 if [ "$(masked_bin "$out" cursor-agent)" = "MASKED" ] \
   && [ "$(masked_bin "$out" agent)" = "MASKED" ] \
+  && [ "$(masked_bin "$out" codex)" = "MASKED" ] \
+  && [ "$(masked_bin "$out" codex-linux-sandbox)" = "MASKED" ] \
   && [ -n "$(masked_bin "$out" claude)" ] \
   && [ "$(env -i PATH="$(masked_path "$out")" claude 2>/dev/null)" = "stub-claude" ]; then
-  ok "claude selected → cursor-agent + its 'agent' alias masked, claude still runs"
+  ok "claude selected → cursor-agent + its 'agent' alias + codex + codex-linux-sandbox masked, claude still runs"
 else
-  bad "claude selected did not mask cursor-agent/agent or broke claude: $out"
+  bad "claude selected did not mask cursor-agent/agent/codex aliases or broke claude: $out"
 fi
 
-out="$(mask_path "$WORK/aliased" MULTICA_AGENT_CLI=cursor,claude)"
-if [ "$(masked_path "$out")" = "$WORK/aliased:$BASE_PATH" ] \
-  && ! printf '%s' "$out" | grep -q '=MASKED'; then
-  ok "both harnesses selected → mask is a no-op (PATH untouched)"
+out="$(mask_path "$WORK/all" MULTICA_AGENT_CLI=codex OPENAI_API_KEY=sk-codex-test)"
+if [ "$(masked_bin "$out" claude)" = "MASKED" ] \
+  && [ "$(masked_bin "$out" cursor-agent)" = "MASKED" ] \
+  && [ -n "$(masked_bin "$out" codex)" ] \
+  && [ "$(env -i PATH="$(masked_path "$out")" codex 2>/dev/null)" = "stub-codex" ]; then
+  ok "codex selected → claude + cursor-agent masked, codex still runs"
 else
-  bad "both-selected boot changed PATH: $out"
+  bad "codex selected did not mask claude/cursor-agent or broke codex: $out"
+fi
+
+out="$(mask_path "$WORK/all" MULTICA_AGENT_CLI=cursor,claude,codex)"
+if [ "$(masked_path "$out")" = "$WORK/all:$BASE_PATH" ] \
+  && ! printf '%s' "$out" | grep -qE '^bin_(claude|cursor-agent|codex)=MASKED$'; then
+  ok "all three harnesses selected → mask is a no-op (PATH untouched)"
+else
+  bad "all-selected boot changed PATH: $out"
 fi
 
 out="$(mask_path "$WORK/agent-other:$WORK/full" MULTICA_AGENT_CLI=claude ANTHROPIC_API_KEY=sk-ant-test)"

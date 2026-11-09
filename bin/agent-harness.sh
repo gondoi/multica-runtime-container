@@ -12,22 +12,24 @@
 #
 #   cursor   cursor-agent   CURSOR_API_KEY
 #   claude   claude         ANTHROPIC_API_KEY | CLAUDE_CODE_OAUTH_TOKEN | ANTHROPIC_AUTH_TOKEN
+#   codex    codex          OPENAI_API_KEY (→ $CODEX_HOME/auth.json) | a pre-provisioned auth.json
 #
 # Selection: MULTICA_AGENT_CLI — comma and/or space separated, default `cursor`
 # (previous behaviour, so existing deployments keep their exact boot contract).
 #
-#   MULTICA_AGENT_CLI=cursor           # Cursor only (default)
-#   MULTICA_AGENT_CLI=claude           # Claude Code only
-#   MULTICA_AGENT_CLI=cursor,claude    # both must be usable
+#   MULTICA_AGENT_CLI=cursor                  # Cursor only (default)
+#   MULTICA_AGENT_CLI=claude                  # Claude Code only
+#   MULTICA_AGENT_CLI=codex                   # OpenAI Codex only
+#   MULTICA_AGENT_CLI=cursor,claude,codex     # all three must be usable
 #
 # Every selected harness is a HARD boot gate: missing binary or missing
 # credential → non-zero exit → CrashLoop, exactly like the old Cursor-only gate.
 # Harnesses *not* selected are ignored by the gate, and after the gate passes
 # their binaries are *masked* out of the PATH the daemon (and every task it
 # spawns) inherits — see "Masking unselected harnesses from PATH" below. The
-# image ships cursor-agent and claude unconditionally, so masking is what keeps
-# a Cursor-only deployment from advertising a Claude harness it never
-# configured.
+# image ships cursor-agent, claude and codex unconditionally, so masking is what
+# keeps a Cursor-only deployment from advertising a Claude or Codex harness it
+# never configured.
 #
 # Note: MULTICA_AGENT_CLI is this container's provision/gate selector, not the
 # daemon's per-run harness switch — the harness for a given run comes from the
@@ -42,11 +44,11 @@
 harness_log() { printf '%s\n' "$*" >&2; }
 
 # Known harness names, one per line.
-harness_known() { printf '%s\n' cursor claude; }
+harness_known() { printf '%s\n' cursor claude codex; }
 
 harness_is_known() {
   case "${1:-}" in
-    cursor|claude) return 0 ;;
+    cursor|claude|codex) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -56,17 +58,19 @@ harness_bin_name() {
   case "${1:-}" in
     cursor) printf 'cursor-agent\n' ;;
     claude) printf 'claude\n' ;;
+    codex) printf 'codex\n' ;;
     *) return 1 ;;
   esac
 }
 
 # Binary the daemon will spawn for a harness, honouring the daemon's own path
-# overrides (MULTICA_CURSOR_PATH / MULTICA_CLAUDE_PATH) when the operator set
-# them explicitly.
+# overrides (MULTICA_CURSOR_PATH / MULTICA_CLAUDE_PATH / MULTICA_CODEX_PATH)
+# when the operator set them explicitly.
 harness_bin_path() {
   case "${1:-}" in
     cursor) printf '%s\n' "${MULTICA_CURSOR_PATH:-$(harness_bin_name cursor)}" ;;
     claude) printf '%s\n' "${MULTICA_CLAUDE_PATH:-$(harness_bin_name claude)}" ;;
+    codex) printf '%s\n' "${MULTICA_CODEX_PATH:-$(harness_bin_name codex)}" ;;
     *) return 1 ;;
   esac
 }
@@ -76,13 +80,25 @@ harness_cred_vars() {
   case "${1:-}" in
     cursor) printf 'CURSOR_API_KEY\n' ;;
     claude) printf 'ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_AUTH_TOKEN\n' ;;
+    codex) printf 'OPENAI_API_KEY (or a pre-provisioned $CODEX_HOME/auth.json)\n' ;;
     *) return 1 ;;
   esac
 }
 
+# Codex's credential/config directory. Codex itself reads CODEX_HOME, and the
+# daemon mirrors this directory into each task's own CODEX_HOME, so the auth
+# file has to live here (default ~/.codex). CODEX_HOME is never exported by this
+# image: the daemon sets it per task.
+harness_codex_home() { printf '%s\n' "${CODEX_HOME:-$HOME/.codex}"; }
+harness_codex_auth_json() { printf '%s\n' "$(harness_codex_home)/auth.json"; }
+
 # Are credentials present in the environment? Secret file mounts are already
 # lifted into env by materialize-secrets.sh before this runs, so env-only checks
-# cover both mount and env-file paths.
+# cover both mount and env-file paths. codex is the exception: codex-cli 0.167.0
+# ignores OPENAI_API_KEY in the environment (verified — it sends no bearer and
+# fails with "Missing bearer or basic authentication"), and authenticates from
+# $CODEX_HOME/auth.json. So for codex either the key (which provision_auth turns
+# into auth.json) or an already-provisioned auth.json satisfies the gate.
 harness_creds_ok() {
   case "${1:-}" in
     cursor) [ -n "${CURSOR_API_KEY:-}" ] ;;
@@ -91,6 +107,22 @@ harness_creds_ok() {
         || [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] \
         || [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]
       ;;
+    codex)
+      if [ -n "${OPENAI_API_KEY:-}" ]; then
+        return 0
+      fi
+      [ -s "$(harness_codex_auth_json)" ]
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# Build-arg hint for a missing harness binary (message text only).
+harness_install_hint() {
+  case "${1:-}" in
+    claude) printf 'INSTALL_CLAUDE_CLI=true' ;;
+    codex) printf 'INSTALL_CODEX_CLI=true' ;;
+    cursor) printf 'the default image (cursor-agent ships unconditionally)' ;;
     *) return 1 ;;
   esac
 }
@@ -115,12 +147,48 @@ harness_selected() {
   done
 }
 
+# Codex authenticates from $CODEX_HOME/auth.json, not from OPENAI_API_KEY (see
+# harness_creds_ok). Turn the env/Secret API key into that file before the
+# daemon starts, using the pinned CLI's own documented writer
+# (`codex login --with-api-key`) so the on-disk format stays correct across
+# codex versions. An auth.json that is already there and is NOT an API-key login
+# (e.g. a ChatGPT-OAuth projection from `codex login`) is left untouched.
+harness_codex_provision_auth() {
+  local bin_path home auth
+  [ -n "${OPENAI_API_KEY:-}" ] || return 0
+  home="$(harness_codex_home)"
+  auth="$home/auth.json"
+  if [ -s "$auth" ] && ! grep -q '"auth_mode"[[:space:]]*:[[:space:]]*"apikey"' "$auth" 2>/dev/null; then
+    harness_log "codex: keeping existing $auth (not an API-key login) — OPENAI_API_KEY is not applied"
+    return 0
+  fi
+  if ! mkdir -p "$home" 2>/dev/null || ! chmod 700 "$home" 2>/dev/null; then
+    harness_log "FATAL: codex: cannot prepare CODEX_HOME '$home' for the projected credential"
+    return 1
+  fi
+  bin_path="$(command -v "$(harness_bin_path codex)" 2>/dev/null || true)"
+  if [ -z "$bin_path" ]; then
+    harness_log "FATAL: codex: cannot locate the codex binary to write $auth"
+    return 1
+  fi
+  if ! printf '%s\n' "$OPENAI_API_KEY" | "$bin_path" login --with-api-key >/dev/null 2>&1; then
+    harness_log "FATAL: codex: 'codex login --with-api-key' failed — OPENAI_API_KEY could not be written to $auth"
+    return 1
+  fi
+  chmod 600 "$auth" 2>/dev/null || true
+  harness_log "codex: OPENAI_API_KEY → $auth (auth_mode=apikey, 0600)"
+  return 0
+}
+
 # Export the env the daemon needs to spawn the selected harness(es):
 #   - MULTICA_<CLI>_PATH pinned to the resolved absolute path (daemon-spawned
 #     children get the same binary the gate proved)
 #   - DISABLE_AUTOUPDATER=1 for claude: the image pins one Claude Code version
 #     and the non-root runtime user cannot self-update that path anyway; an
 #     attempted update would drift from the pin or fail mid-run.
+#   - codex: no env var — its credential is the projected $CODEX_HOME/auth.json.
+# Returns non-zero when a selected harness's credential could not be provisioned
+# (fail closed: the daemon would otherwise start a task that cannot authenticate).
 harness_export_env() {
   local h path
   for h in "$@"; do
@@ -134,8 +202,17 @@ harness_export_env() {
         [ -n "${MULTICA_CLAUDE_PATH:-}" ] || export MULTICA_CLAUDE_PATH="$(command -v "$path" 2>/dev/null || printf '%s' "$path")"
         export DISABLE_AUTOUPDATER="${DISABLE_AUTOUPDATER:-1}"
         ;;
+      codex)
+        path="$(harness_bin_path codex)"
+        if [ -z "${MULTICA_CODEX_PATH:-}" ]; then
+          MULTICA_CODEX_PATH="$(command -v "$path" 2>/dev/null || printf '%s' "$path")"
+          export MULTICA_CODEX_PATH
+        fi
+        harness_codex_provision_auth || return 1
+        ;;
     esac
   done
+  return 0
 }
 
 # Gate every selected harness (binary + credentials). Returns non-zero after
@@ -157,7 +234,7 @@ harness_gate() {
   for h in "${selected[@]}"; do
     path="$(harness_bin_path "$h")"
     if ! command -v "$path" >/dev/null 2>&1; then
-      harness_log "FATAL: required binary not on PATH: $path (harness '$h'; build with INSTALL_CLAUDE_CLI=true for claude)"
+      harness_log "FATAL: required binary not on PATH: $path (harness '$h'; build with $(harness_install_hint "$h"))"
       rc=1
       continue
     fi
@@ -171,15 +248,15 @@ harness_gate() {
 
   [ "$rc" = 0 ] || return 1
 
-  harness_export_env "${selected[@]}"
+  harness_export_env "${selected[@]}" || return 1
   harness_log "agent harnesses: ${selected[*]}"
   return 0
 }
 
 # ── Masking unselected harnesses from PATH ────────────────────────────────
-# Both agent CLIs ship in the image, so a Cursor-only deployment still has
-# `claude` on PATH; that is the surface that makes Multica advertise a harness
-# the deployment never configured. After the gate above passes, every harness
+# All three agent CLIs ship in the image, so a Cursor-only deployment still has
+# `claude` and `codex` on PATH; that is the surface that makes Multica advertise
+# a harness the deployment never configured. After the gate above passes, every harness
 # MULTICA_AGENT_CLI did not select is removed from the PATH exported to the
 # daemon (and therefore to every task it spawns).
 #
@@ -204,10 +281,12 @@ harness_gate() {
 harness_mask_dir() { printf '%s\n' "${MULTICA_HARNESS_MASK_DIR:-${TMPDIR:-/tmp}/multica-harness-mask}"; }
 
 # Other executable names that resolve to a harness's binary in this image
-# (`/usr/local/bin/agent` → cursor-agent).
+# (`/usr/local/bin/agent` → cursor-agent; `codex-linux-sandbox` → codex, the
+# Linux sandbox helper codex re-execs itself as).
 harness_bin_aliases() {
   case "${1:-}" in
     cursor) printf 'agent\n' ;;
+    codex) printf 'codex-linux-sandbox\n' ;;
     *) : ;;
   esac
 }

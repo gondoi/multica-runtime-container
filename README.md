@@ -2,11 +2,11 @@
 
 Thin container image for a **[Multica](https://multica.ai) agent runtime home-base**.
 
-It boots a Multica daemon with two agent CLI harnesses available — **Cursor**
-(`cursor-agent`, the original v1 CLI) and **Claude Code** (`claude`) — persists
-workspaces on a volume, and relies on Multica **lazy** `repo checkout` for
-source — no consumer monorepos are baked into the image, and there is **no**
-boot-time inventory clone-all.
+It boots a Multica daemon with three agent CLI harnesses available — **Cursor**
+(`cursor-agent`, the original v1 CLI), **Claude Code** (`claude`) and **OpenAI
+Codex** (`codex`) — persists workspaces on a volume, and relies on Multica
+**lazy** `repo checkout` for source — no consumer monorepos are baked into the
+image, and there is **no** boot-time inventory clone-all.
 
 Published image: `ghcr.io/gondoi/multica-runtime` (public GHCR, anonymous pull).
 
@@ -67,6 +67,7 @@ Deployments (Compose, Kubernetes) should pin a release tag such as `v0.1.0`.
 | `multica` CLI + daemon | Runtime identity and task execution |
 | `cursor-agent` | Agent CLI harness `cursor` (Cursor) |
 | `claude` | Agent CLI harness `claude` (Claude Code; pinned native binary, no Node) |
+| `codex` | Agent CLI harness `codex` (OpenAI Codex; pinned native Rust binary, no Node) |
 | `asdf` | Versioned tool plugins (languages / CLIs) on the workspaces volume |
 | `git`, `openssh-client`, `jq`, `curl`, `procps` | Checkout, scripting, readiness probes |
 | `gh` (GitHub CLI) | Agent tooling (`gh pr create`, `gh api`, `gh run`); authenticates from the resolved tier — App tier re-mints per invocation |
@@ -77,7 +78,7 @@ Deployments (Compose, Kubernetes) should pin a release tag such as `v0.1.0`.
 | `/usr/local/bin/ready.sh` | Shallow Ready probe (daemon up — not full inventory) |
 | `/usr/local/bin/egress-proxy.sh` | Optional MITM-CA trust + fail-closed boot when `MULTICA_EGRESS_PROXY=iron-proxy` (off by default) |
 
-**Not** in the image: language toolchains (install via asdf at runtime), AWS credentials of any kind, agent CLIs beyond Cursor + Claude Code (Codex, Copilot, …), or any private consumer AWS allowlist / inventory.
+**Not** in the image: language toolchains (install via asdf at runtime), AWS credentials of any kind, agent CLIs beyond Cursor + Claude Code + OpenAI Codex (Copilot, Kimi, …), or any private consumer AWS allowlist / inventory.
 
 ## Boot contract
 
@@ -88,7 +89,7 @@ Order:
 2. Materialize Secret-projected Multica home (`config.json` + `daemon.id`) into ephemeral `~/.multica`; load Cursor/git token (and optional GitHub App) files
 3. Wire optional AWS ConfigMaps into PVC-backed `~/.aws` + `~/.config/aws-sso` (SSO cache on workspaces volume)
 3b. Optional egress control (`MULTICA_EGRESS_PROXY=iron-proxy`): validate the proxy's MITM CA, build one trust bundle (system CAs + proxy CA) and export it through the per-toolchain CA env vars — **fails closed** when the CA is missing/unusable. Default off. See [Egress control](#egress-control-optional)
-4. Hard gates — required binaries (`multica`, `gh`, `git`, `jq`, `curl`, `asdf`, `aws`, `aws-sso`), Multica auth, forge token **or** GitHub App / GHES credentials, and every harness named by `MULTICA_AGENT_CLI` (`cursor` → `cursor-agent` + `CURSOR_API_KEY`; `claude` → `claude` + an Anthropic credential). Harnesses it did **not** name are then masked out of the daemon/task `PATH`
+4. Hard gates — required binaries (`multica`, `gh`, `git`, `jq`, `curl`, `asdf`, `aws`, `aws-sso`), Multica auth, forge token **or** GitHub App / GHES credentials, and every harness named by `MULTICA_AGENT_CLI` (`cursor` → `cursor-agent` + `CURSOR_API_KEY`; `claude` → `claude` + an Anthropic credential; `codex` → `codex` + `OPENAI_API_KEY` or a pre-provisioned `$CODEX_HOME/auth.json`). Codex's key is projected into `~/.codex/auth.json` here. Harnesses it did **not** name are then masked out of the daemon/task `PATH`
 5. Configure git HTTPS credential helper; validate `MULTICA_LOG_LEVEL`; report AWS credential source
 6. `multica login` (token refresh) → **re-pin workspace** → daemon start --foreground
 
@@ -109,6 +110,7 @@ Multica home is **Secret-projected** — there is **no** Multica-home PVC. Only 
 | `config.json`, `daemon.id` | `/run/secrets/multica-home/` | Multica identity (copied to ephemeral `~/.multica`) |
 | `CURSOR_API_KEY` | `/run/secrets/cursor/CURSOR_API_KEY` | Cursor harness (`cursor`) |
 | `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_AUTH_TOKEN` | `/run/secrets/claude/` | Claude Code harness (`claude`) — one of the three |
+| `OPENAI_API_KEY` **or** `auth.json` | `/run/secrets/codex/` | OpenAI Codex harness (`codex`) — the key is projected into `~/.codex/auth.json` at boot; a mounted `auth.json` (`codex login`) is used as-is |
 | `GITHUB_TOKEN` (etc.) | `/run/secrets/git/GITHUB_TOKEN` | git HTTPS via static PAT (personal / orgs that allow PATs) |
 | `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY` | `/run/secrets/git/` | git HTTPS via short-lived App installation tokens (org-safe; preferred when PATs are banned) |
 | `GITHUB_USER`, `GITHUB_PASSWORD` | `/run/secrets/git/` | git HTTPS via username + password — **GitHub Enterprise Server only**, lowest priority |
@@ -136,17 +138,18 @@ harnesses this container provisions and **hard-gates**:
 | --- | --- | --- |
 | `cursor` (default) | `cursor-agent` | `CURSOR_API_KEY` |
 | `claude` | `claude` | `ANTHROPIC_API_KEY` **or** `CLAUDE_CODE_OAUTH_TOKEN` **or** `ANTHROPIC_AUTH_TOKEN` |
-| `cursor,claude` | both | both (each harness needs its own) |
+| `codex` | `codex` | `OPENAI_API_KEY` **or** a pre-provisioned `$CODEX_HOME/auth.json` |
+| `cursor,claude,codex` | all | all (each harness needs its own) |
 
 - A selected harness with a missing binary or credential is a **hard boot
   failure** (CrashLoop with an actionable message), never a silent fallback.
 - Harnesses **not** selected are ignored — a Claude-only deployment does not
   need `CURSOR_API_KEY`, and vice versa.
 - Their **binaries are masked** from the PATH the daemon — and therefore every
-  task it spawns — inherits. Both CLIs ship in the image, so without this a
-  Cursor-only deployment still has `claude` on `PATH` and reports a harness it
-  never configured. Masking is a boot-time `PATH` rewrite, not an uninstall:
-  the binary stays in the image, nothing is deleted, and changing
+  task it spawns — inherits. All three CLIs ship in the image, so without this a
+  Cursor-only deployment still has `claude` and `codex` on `PATH` and reports
+  harnesses it never configured. Masking is a boot-time `PATH` rewrite, not an
+  uninstall: the binary stays in the image, nothing is deleted, and changing
   `MULTICA_AGENT_CLI` needs only a restart. It can never hide a *selected*
   harness (the hard gate above still runs first and still decides Crashing).
 - `docker exec` / `kubectl exec` shells start from the **image** environment,
@@ -161,9 +164,10 @@ harnesses this container provisions and **hard-gates**:
 - The harness used for a particular run is chosen on the **Multica agent
   definition** (server side); `MULTICA_AGENT_CLI` is this container's
   provision/gate selector, not a per-run switch.
-- `MULTICA_CLAUDE_PATH` / `MULTICA_CURSOR_PATH` are honoured as binary overrides
-  (the daemon reads the same variables); when unset, the entrypoint pins them to
-  the resolved absolute path of the binary it gated.
+- `MULTICA_CLAUDE_PATH` / `MULTICA_CURSOR_PATH` / `MULTICA_CODEX_PATH` are
+  honoured as binary overrides (the daemon reads the same variables); when
+  unset, the entrypoint pins them to the resolved absolute path of the binary
+  it gated.
 
 ### Claude Code credential tiers
 
@@ -178,6 +182,40 @@ only checks that at least one exists and never logs any of them.
 `DISABLE_AUTOUPDATER=1` is exported by default so the pinned Claude Code build
 cannot self-update inside the container (override deliberately if you want
 in-place upgrades).
+
+### OpenAI Codex credential and sandbox
+
+Codex is **not** authenticated by `OPENAI_API_KEY` in the environment. Verified
+against the pinned `codex-cli 0.167.0`: with only `OPENAI_API_KEY` set the CLI
+sends no `Authorization` header and the API answers `401 Missing bearer or basic
+authentication`. Codex reads its credential from `$CODEX_HOME/auth.json`, so the
+entrypoint converts the key into that file before the daemon starts:
+
+| Input | What happens |
+| --- | --- |
+| `OPENAI_API_KEY` (env or `/run/secrets/codex/OPENAI_API_KEY`) | `codex login --with-api-key` writes `~/.codex/auth.json` (`auth_mode: apikey`, mode 0600). Uses the CLI's own writer so the format stays correct across versions. |
+| `auth.json` mount (`CODEX_AUTH_JSON_FILE`, default `/run/secrets/codex/auth.json`) | projected byte-for-byte into `~/.codex/auth.json` — use this for a `codex login` ChatGPT-OAuth login. |
+
+An existing `auth.json` whose `auth_mode` is **not** `apikey` is never
+overwritten by an env key, and the boot log says so. The daemon mirrors
+`~/.codex` into each task's own `CODEX_HOME`; `CODEX_HOME` itself is **not**
+exported by this image.
+
+**Sandbox requirement (Linux).** Codex runs commands through `bubblewrap`
+(installed in the image, plus the `codex-linux-sandbox` helper alias the CLI
+re-execs itself as). bubblewrap needs unprivileged user + mount namespaces; the
+Docker default seccomp/AppArmor profiles block that on Ubuntu hosts, and a codex
+**task** then fails with `bwrap: No permissions to create new namespace` or
+`bwrap: Failed to make / slave`. Boot and the gate are unaffected.
+
+| Runtime | What to add |
+| --- | --- |
+| Docker / Compose | `--security-opt seccomp=unconfined --security-opt apparmor=unconfined` was the minimum on this repo's dev host (Ubuntu 26.04, Docker 29.7.2). A GitHub-hosted runner refuses **even with `--privileged`** (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`), so this is host/kernel-dependent — there is no single flag set that is guaranteed. Shipped commented in `docker-compose.yml`. |
+| Kubernetes | `securityContext.seccompProfile.type: Unconfined` + `appArmorProfile.type: Unconfined`, and if loopback setup still fails, network-namespace capability (`NET_ADMIN`). **Not verified** on a cluster here; check with `kubectl exec deploy/multica-runtime -- codex sandbox -- /bin/echo ok` first. |
+
+Verify in any runtime: `codex sandbox -- /bin/echo ok` (needs no credential).
+Both knobs weaken isolation for every harness in the container, which is why
+they are opt-in rather than image defaults.
 
 ### GitHub auth precedence (App > PAT > password)
 
@@ -302,24 +340,26 @@ Kubernetes/IRSA walkthrough: [`docs/kubernetes.md`](docs/kubernetes.md).
 ## Build locally
 
 ```bash
-# Both harnesses (default): Cursor + Claude Code
+# All harnesses (default): Cursor + Claude Code + OpenAI Codex
 docker build -t multica-runtime:local .
 
-# Cursor-only image (~330 MB smaller) — the claude boot gate then rejects
-# MULTICA_AGENT_CLI=claude with an actionable message:
-docker build --build-arg INSTALL_CLAUDE_CLI=false -t multica-runtime:local-cursor .
+# Cursor-only image (~330 MB smaller; Codex adds ~310 MB on top of that) — the
+# claude/codex gates then reject those harnesses with an actionable message:
+docker build --build-arg INSTALL_CLAUDE_CLI=false --build-arg INSTALL_CODEX_CLI=false \
+  -t multica-runtime:local-cursor .
 ```
 
-Claude Code ships as **one pinned native binary** (`downloads.claude.ai`, SHA-256
-verified against the release manifest at build time) — no Node.js in the image.
-Its footprint is ~330 MB on disk, so the slim variant above exists for
-Cursor-only deployments.
+Claude Code and OpenAI Codex each ship as **one pinned native binary** (Claude
+from `downloads.claude.ai` with its manifest SHA-256, Codex from the
+`openai/codex` GitHub release with a pinned per-target SHA-256) — no Node.js in
+the image. Codex's footprint is ~310 MB on disk, so `INSTALL_CODEX_CLI=false`
+exists for deployments that never run the codex harness.
 
 Smoke that baseline binaries exist:
 
 ```bash
 docker run --rm --entrypoint /bin/bash multica-runtime:local -lc \
-  'command -v multica cursor-agent claude gh aws aws-sso asdf git ssh jq curl tini ready.sh materialize-secrets.sh materialize-aws.sh agent-harness.sh && claude --version && cursor-agent --version && gh --version && aws --version && aws-sso version'
+  'command -v multica cursor-agent claude codex gh aws aws-sso asdf git ssh jq curl tini ready.sh materialize-secrets.sh materialize-aws.sh agent-harness.sh && claude --version && cursor-agent --version && codex --version && gh --version && aws --version && aws-sso version'
 ```
 
 ### Compose (laptop parity)
@@ -327,13 +367,15 @@ docker run --rm --entrypoint /bin/bash multica-runtime:local -lc \
 Full walkthrough: [`docs/docker.md`](docs/docker.md).
 
 ```bash
-mkdir -p secrets/multica-home secrets/cursor secrets/claude secrets/git
+mkdir -p secrets/multica-home secrets/cursor secrets/claude secrets/codex secrets/git
 cp examples/secrets/multica-home/config.json.example secrets/multica-home/config.json
 cp examples/secrets/multica-home/daemon.id.example   secrets/multica-home/daemon.id
 # edit secrets/… then:
 printf '%s' "$CURSOR_API_KEY" > secrets/cursor/CURSOR_API_KEY
 # optional — Claude Code harness, then set MULTICA_AGENT_CLI=claude (or cursor,claude):
 printf '%s' "$ANTHROPIC_API_KEY" > secrets/claude/ANTHROPIC_API_KEY
+# optional — OpenAI Codex harness, then set MULTICA_AGENT_CLI=codex (or a combination):
+printf '%s' "$OPENAI_API_KEY" > secrets/codex/OPENAI_API_KEY
 printf '%s' "$GITHUB_TOKEN"   > secrets/git/GITHUB_TOKEN
 docker compose up -d --build
 docker compose ps      # healthy when ready.sh passes
@@ -363,7 +405,8 @@ See [`.env.example`](.env.example) for optional non-secret knobs. Tokens prefer 
 | `secrets/multica-home/daemon.id` | Stable daemon id across recreates |
 | `secrets/cursor/CURSOR_API_KEY` | Cursor harness auth (**required** while `MULTICA_AGENT_CLI` includes `cursor`, the default) |
 | `secrets/claude/ANTHROPIC_API_KEY` (or `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_AUTH_TOKEN`) | Claude Code harness auth (**required** while `MULTICA_AGENT_CLI` includes `claude`) |
-| `MULTICA_AGENT_CLI` | Harnesses provisioned + gated at boot: `cursor` (default) \| `claude` \| `cursor,claude`. See [Agent CLI harnesses](#agent-cli-harnesses-multica_agent_cli). |
+| `secrets/codex/OPENAI_API_KEY` (or `secrets/codex/auth.json` from `codex login`) | OpenAI Codex harness auth (**required** while `MULTICA_AGENT_CLI` includes `codex`) — key is projected into `~/.codex/auth.json` |
+| `MULTICA_AGENT_CLI` | Harnesses provisioned + gated at boot: `cursor` (default) \| `claude` \| `codex` \| any combination. See [Agent CLI harnesses](#agent-cli-harnesses-multica_agent_cli). |
 | `secrets/git/GITHUB_TOKEN` | git HTTPS PAT (**required** unless GitLab/Gitea **or** GitHub App trio **or** GHES password pair) |
 | `secrets/git/GITHUB_APP_*` | App ID + installation ID + PEM (alternative to `GITHUB_TOKEN`) |
 | `secrets/git/GITHUB_USER` + `GITHUB_PASSWORD` | GitHub Enterprise Server password pair (lowest priority; `github.com` rejects it) |
@@ -517,9 +560,9 @@ DNS routing alone is bypassable by hardcoded IPs. No "enforced" claim is made.
 
 - Repos are **not** cloned at image build or at container start. Register them in Multica workspace/project metadata; materialize with `multica repo checkout` during tasks (first task may cold-clone).
 - `asdf` is installed with plugin-install capability; pin tool versions (including AWS CLI) on the workspaces volume, not in the image. Upstream `aws-sso` is image-pinned at a fixed path for stable `credential_process` lines.
-- Patterns inspired by community Multica runtimes (`tini`, non-root user, forge HTTPS helpers) — adapted for a Cursor + Claude Code, asdf-based baseline.
-- **Harness ownership is split on purpose.** The Multica daemon (upstream `multica` CLI) owns harness invocation, stream protocol and output parsing; this image owns *provisioning* — install the pinned CLI, gate on its binary + credential, export the daemon's path/auth env. That is why the Claude work here is a binary + credential + gate + docs change, not a new parser: adding a harness parser would mean patching the upstream CLI, not this repo.
-- `bin/agent-harness.sh` is the single place that knows what a harness needs (binary, credential vars, path overrides). Adding a third harness (e.g. Codex) is one `case` branch per helper plus a Dockerfile install step — the entrypoint does not change.
+- Patterns inspired by community Multica runtimes (`tini`, non-root user, forge HTTPS helpers) — adapted for a Cursor + Claude Code + OpenAI Codex, asdf-based baseline.
+- **Harness ownership is split on purpose.** The Multica daemon (upstream `multica` CLI) owns harness invocation, stream protocol and output parsing; this image owns *provisioning* — install the pinned CLI, gate on its binary + credential, export the daemon's path/auth env. That is why the harness work here is a binary + credential + gate + docs change, not a new parser: adding a harness parser would mean patching the upstream CLI, not this repo.
+- `bin/agent-harness.sh` is the single place that knows what a harness needs (binary, credential vars, path overrides). Adding a harness is one `case` branch per helper plus a Dockerfile install step — the entrypoint does not change (Codex was added exactly that way).
 - AWS CLI ships with no baked credentials — prefer IRSA / instance role (see [AWS CLI auth tiers](#aws-auth-tiers)). ConfigMap `aws-sso` profiles + operator-exec login are supported for homelab (see [AWS profiles](#aws-profiles-configmaps--pvc-cache)); SSO cache lives on the workspaces PVC.
 
 ## License
