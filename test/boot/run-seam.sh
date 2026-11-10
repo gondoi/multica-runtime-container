@@ -86,13 +86,26 @@ chmod +x "$STUB" "$ROOT/entrypoint.sh" \
   "$ROOT/bin/egress-proxy.sh" \
   "$ROOT/bin/ready.sh"
 
+log_has() {
+  # log_has <container> <grep-pattern> — SIGPIPE-safe `docker logs | grep -q`.
+  #
+  # `docker logs "$c" | grep -q PAT` is a trap under `set -o pipefail`: grep
+  # exits on the first match, docker logs takes EPIPE and reports 141, and the
+  # pipeline therefore looks like a MISS even though the pattern matched (the
+  # line is even visible in the failure dump taken right after). Capture the
+  # logs first, then grep the buffer — no pipe, no SIGPIPE.
+  local cname="$1" pattern="$2" out
+  out="$(docker logs "$cname" 2>&1 || true)"
+  grep -q -- "$pattern" <<<"$out"
+}
+
 wait_log() {
   # wait_log <container> <grep-pattern> [tries] — docker's log driver can lag the
   # container by a beat, so a single `docker logs` right after an exec-based
   # readiness check is racy. Poll instead of failing on a partial flush.
   local cname="$1" pattern="$2" tries="${3:-10}" i
   for i in $(seq 1 "$tries"); do
-    if docker logs "$cname" 2>&1 | grep -q -- "$pattern"; then
+    if log_has "$cname" "$pattern"; then
       return 0
     fi
     sleep 1
@@ -358,7 +371,7 @@ fi
 
 # BOX-94 regression: the log follower must attach only once the daemon owns
 # daemon.log, and its own failure must never take the container down.
-if docker logs "$cname_proj" 2>&1 | grep -q 'no log file found'; then
+if log_has "$cname_proj" 'no log file found'; then
   bad "log follower raced the daemon and hit 'no log file found'"
   docker logs "$cname_proj" >&2 || true
 else
@@ -429,7 +442,7 @@ else
   docker logs "$cname_proj" >&2 || true
 fi
 # ... and stays quiet when MULTICA_MACHINE_NAME is set (warning would be noise).
-if docker logs "$cname_machine" 2>&1 | grep -q 'does not change the runtime-list name'; then
+if log_has "$cname_machine" 'does not change the runtime-list name'; then
   bad "trap warning fired even though MULTICA_MACHINE_NAME was set"
 else
   ok "no trap warning when MULTICA_MACHINE_NAME is set"
@@ -511,7 +524,7 @@ else
   bad "daemon environment missing claude path/autoupdater pin"
 fi
 
-if docker logs "$cname_claude" 2>&1 | grep -q 'sk-ant-boot_seam_claude_fixture'; then
+if log_has "$cname_claude" 'sk-ant-boot_seam_claude_fixture'; then
   bad "claude credential leaked into the boot log"
 else
   ok "claude credential never appears in container logs"
@@ -589,7 +602,7 @@ else
   bad "daemon environment is missing the codex path/key"
 fi
 
-if docker logs "$cname_codex" 2>&1 | grep -q 'sk-codex-boot_seam_fixture'; then
+if log_has "$cname_codex" 'sk-codex-boot_seam_fixture'; then
   bad "codex credential leaked into the boot log"
 else
   ok "codex credential never appears in container logs"
@@ -680,7 +693,7 @@ fi
 # crash-no-claude-auth.env selects claude without an Anthropic credential and
 # still has to CrashLoop (run above), and the claude-only boot reached Ready.
 if wait_log "$cname_claude" 'harness claude: ok' \
-  && ! docker logs "$cname_claude" 2>&1 | grep -q 'required binary not on PATH: claude'; then
+  && ! log_has "$cname_claude" 'required binary not on PATH: claude'; then
   ok "selected-harness gate unaffected by the mask (binary still gated as before)"
 else
   bad "masking interfered with the selected-harness binary gate"
@@ -705,7 +718,7 @@ else
 fi
 
 # Without AWS mounts, daemon still Ready (continue-on-degrade).
-if docker logs "$cname_proj" 2>&1 | grep -q 'AWS profiles: no ConfigMap mounts'; then
+if wait_log "$cname_proj" 'AWS profiles: no ConfigMap mounts'; then
   ok "AWS absent → continue degraded (projected happy path)"
 else
   bad "expected degrade log when AWS ConfigMaps are not mounted"
