@@ -41,6 +41,7 @@ cname_env=""
 cname_proj=""
 cname_slug=""
 cname_aws=""
+cname_awsenv=""
 cname_pwd=""
 cname_lvl=""
 cname_claude=""
@@ -63,6 +64,7 @@ cleanup() {
   [ -n "$cname_lvl" ] && docker rm -f "$cname_lvl" >/dev/null 2>&1 || true
   [ -n "$cname_machine" ] && docker rm -f "$cname_machine" >/dev/null 2>&1 || true
   [ -n "$cname_aws" ] && docker rm -f "$cname_aws" >/dev/null 2>&1 || true
+  [ -n "$cname_awsenv" ] && docker rm -f "$cname_awsenv" >/dev/null 2>&1 || true
   [ -n "$cname_claude" ] && docker rm -f "$cname_claude" >/dev/null 2>&1 || true
   [ -n "$cname_codex" ] && docker rm -f "$cname_codex" >/dev/null 2>&1 || true
   [ -n "$cname_codexproj" ] && docker rm -f "$cname_codexproj" >/dev/null 2>&1 || true
@@ -729,7 +731,7 @@ echo "==> Happy path — AWS ConfigMap mounts + SSO cache on workspaces + login 
 cname_aws="multica-boot-seam-aws-$$"
 docker run -d --name "$cname_aws" \
   --env-file "$FIX/happy-projected.env" \
-  -e AWS_SSO_FILE_PASSWORD_FILE=/run/secrets/aws-sso/AWS_SSO_FILE_PASSWORD \
+  -e MULTICA_AWS_SSO_PASSPHRASE_FILE=/run/secrets/aws-sso/AWS_SSO_FILE_PASSWORD \
   -v "$STUB:/usr/local/bin/multica:ro" \
   -v "$SECRETS/multica-home:/run/secrets/multica-home:ro" \
   -v "$SECRETS/cursor:/run/secrets/cursor:ro" \
@@ -828,6 +830,69 @@ if docker logs "$cname_aws" 2>&1 | grep -q 'boot-seam-fake-passphrase'; then
   bad "boot log leaked the aws-sso passphrase"
 else
   ok "aws-sso passphrase never logged"
+fi
+
+# The boot line must name the source, so "which wiring is this pod using?" has an
+# answer in the log instead of a guess.
+if docker logs "$cname_aws" 2>&1 \
+  | grep -q 'passphrase loaded from file:/run/secrets/aws-sso/AWS_SSO_FILE_PASSWORD'; then
+  ok "boot reports the passphrase source (file path)"
+else
+  bad "boot did not report the file passphrase source"
+  docker logs "$cname_aws" 2>&1 | grep 'aws auth' >&2 || true
+fi
+
+# kubectl exec / docker exec sessions do NOT inherit boot-time exports — the
+# documented trade-off of the file wiring (operator login prompts there).
+if docker exec "$cname_aws" sh -c 'test -n "${AWS_SSO_FILE_PASSWORD:-}"' 2>/dev/null; then
+  bad "file wiring unexpectedly visible in a docker-exec session (docs say it prompts)"
+else
+  ok "file wiring is daemon-env only; docker exec session does not see it"
+fi
+
+# Recommended wiring: AWS_SSO_FILE_PASSWORD straight from the container env
+# (Kubernetes secretKeyRef equivalent). This also reaches exec sessions, so the
+# operator login never prompts.
+echo "==> Happy path — aws-sso passphrase via container env (secretKeyRef wiring)"
+cname_awsenv="multica-boot-seam-awsenv-$$"
+docker run -d --name "$cname_awsenv" \
+  --env-file "$FIX/happy-projected.env" \
+  -e AWS_SSO_FILE_PASSWORD=boot-seam-fake-passphrase \
+  -v "$STUB:/usr/local/bin/multica:ro" \
+  -v "$SECRETS/multica-home:/run/secrets/multica-home:ro" \
+  -v "$SECRETS/cursor:/run/secrets/cursor:ro" \
+  -v "$SECRETS/git:/run/secrets/git:ro" \
+  -v "$AWS_EX/config:/run/config/aws/config:ro" \
+  -v "$AWS_EX/config.yaml:/run/config/aws-sso/config.yaml:ro" \
+  "$IMAGE" >/dev/null
+
+assert_ready_container "$cname_awsenv" "happy/aws-env Ready"
+
+awsenv_pid="$(docker exec "$cname_awsenv" pgrep -f 'sleep infinity' 2>/dev/null | head -1 || true)"
+if [ -n "$awsenv_pid" ] \
+  && docker exec "$cname_awsenv" bash -c "tr '\\0' '\\n' < /proc/${awsenv_pid}/environ | grep -qx 'AWS_SSO_FILE_PASSWORD=boot-seam-fake-passphrase'"; then
+  ok "secretKeyRef-style env reaches the daemon (tasks inherit it)"
+else
+  bad "AWS_SSO_FILE_PASSWORD from the container env missing in the daemon env"
+fi
+
+if docker exec "$cname_awsenv" sh -c 'test "$AWS_SSO_FILE_PASSWORD" = boot-seam-fake-passphrase' 2>/dev/null; then
+  ok "secretKeyRef-style env also visible to an exec session (operator login needs no prompt)"
+else
+  bad "AWS_SSO_FILE_PASSWORD not visible in an exec session with the env wiring"
+fi
+
+if docker logs "$cname_awsenv" 2>&1 | grep -q 'passphrase loaded from env'; then
+  ok "boot reports the passphrase source (env)"
+else
+  bad "boot did not report the env passphrase source"
+  docker logs "$cname_awsenv" 2>&1 | grep 'aws auth' >&2 || true
+fi
+
+if docker logs "$cname_awsenv" 2>&1 | grep -q 'boot-seam-fake-passphrase'; then
+  bad "boot log leaked the aws-sso passphrase (env wiring)"
+else
+  ok "env-wired passphrase never logged"
 fi
 
 echo "==> Happy path — optional egress proxy (iron-proxy): MITM CA trusted, default off"

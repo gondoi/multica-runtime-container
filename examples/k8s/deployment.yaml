@@ -118,13 +118,35 @@ spec:
             # - name: AWS_REGION
             #   value: us-east-1
             #
-            # aws-sso SecureStore passphrase (credential_process profiles).
-            # The encrypted file store prompts on every open and agent tasks
-            # have no TTY, so aws-sso process needs AWS_SSO_FILE_PASSWORD. Put
-            # the passphrase in the `multica-runtime-aws-sso-unlock` Secret (see
-            # secret.example.yaml) and uncomment this env var plus the `aws-sso-
-            # unlock` volume/mount below. HIGHER-RISK: every task inherits it.
-            # - name: AWS_SSO_FILE_PASSWORD_FILE
+            # aws-sso SecureStore passphrase (`credential_process` profiles).
+            # The encrypted `file` store asks for a passphrase on every open and
+            # agent tasks have no TTY, so aws-sso reads it from its own variable
+            # AWS_SSO_FILE_PASSWORD. HIGHER-RISK: every task inherits it and can
+            # read it from its own env (it protects the SSO cache at rest; it is
+            # not an AWS credential).
+            #
+            # RECOMMENDED — pass the passphrase itself straight from a Secret.
+            # The name has NO `_FILE` suffix because the value is the passphrase.
+            # Because it is in the pod env, the daemon, every task AND an
+            # interactive `kubectl exec` operator login all get it, so the
+            # operator login never prompts and cannot pick a different
+            # passphrase than the agents use.
+            # - name: AWS_SSO_FILE_PASSWORD
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: multica-runtime-aws-sso-unlock
+            #       key: AWS_SSO_FILE_PASSWORD
+            #
+            # ALTERNATIVE — mount the passphrase as a file and point
+            # MULTICA_AWS_SSO_PASSPHRASE_FILE at it. Note the shape difference:
+            # that variable is a PATH TO A FILE, so its name ends in `_FILE` —
+            # the passphrase file it points at is still `AWS_SSO_FILE_PASSWORD`.
+            # Trade-off: the value reaches the daemon and its tasks only, so a
+            # later `kubectl exec` operator login PROMPTS for the passphrase and
+            # must be given the same value, or the store diverges and agents
+            # fail closed again. Requires the `aws-sso-unlock` volume/mount
+            # below (commented out, same as this block).
+            # - name: MULTICA_AWS_SSO_PASSPHRASE_FILE
             #   value: /run/secrets/aws-sso/AWS_SSO_FILE_PASSWORD
           volumeMounts:
             - name: workspaces
@@ -155,9 +177,9 @@ spec:
             # - name: aws
             #   mountPath: /run/secrets/aws
             #   readOnly: true
-            # Optional — aws-sso SecureStore passphrase (see the
-            # AWS_SSO_FILE_PASSWORD_FILE env var above). Requires the
-            # `aws-sso-unlock` volume below AND that Secret to exist.
+            # Optional — aws-sso passphrase as a FILE (the alternative wiring
+            # above). Only needed when using MULTICA_AWS_SSO_PASSPHRASE_FILE;
+            # the recommended secretKeyRef env var needs no mount.
             # - name: aws-sso-unlock
             #   mountPath: /run/secrets/aws-sso
             #   readOnly: true
@@ -244,8 +266,11 @@ spec:
         #         path: config
         #       - key: credentials
         #         path: credentials
-        # Optional — aws-sso SecureStore passphrase. Uncomment together with the
-        # AWS_SSO_FILE_PASSWORD_FILE env var and the `aws-sso-unlock` mount above.
+        # Optional — aws-sso passphrase as a FILE (alternative to the
+        # recommended secretKeyRef env var). Uncomment together with the
+        # MULTICA_AWS_SSO_PASSPHRASE_FILE env var and the `aws-sso-unlock` mount
+        # above. The Secret key stays AWS_SSO_FILE_PASSWORD — that is the
+        # passphrase; only the variable that points at this file carries `_FILE`.
         # - name: aws-sso-unlock
         #   secret:
         #     secretName: multica-runtime-aws-sso-unlock

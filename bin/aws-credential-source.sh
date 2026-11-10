@@ -31,7 +31,7 @@ aws_sso_note() {
   command -v grep >/dev/null 2>&1 || return 0
   grep -qs 'credential_process *=.*aws-sso' "$cfg" || return 0
   if [ -n "${AWS_SSO_FILE_PASSWORD:-}" ]; then
-    printf '; aws-sso profile(s): SecureStore passphrase is exported — non-TTY credential_process can unlock'
+    printf '; aws-sso profile(s): passphrase loaded from %s — non-TTY credential_process can unlock' "${MULTICA_AWS_SSO_PASSPHRASE_SOURCE:-env}"
   else
     printf '; aws-sso profile(s): AWS_SSO_FILE_PASSWORD unset — non-TTY agent tasks get "Enter passphrase to unlock ~/.config/aws-sso/secure" then "Must run `aws-sso login`" (see README AWS profiles)'
   fi

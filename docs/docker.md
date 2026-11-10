@@ -265,20 +265,41 @@ requesting a `refresh_token`.
 
 aws-sso's encrypted `file` SecureStore asks for its passphrase on every process
 that opens it. An agent task has no TTY, so `credential_process` can only unlock
-it from `AWS_SSO_FILE_PASSWORD` — mount that passphrase and the entrypoint
-lifts it into the env:
+it from `AWS_SSO_FILE_PASSWORD`.
+
+Two names, and they are not interchangeable:
+
+| Variable | Value |
+| --- | --- |
+| `AWS_SSO_FILE_PASSWORD` | the **passphrase** (aws-sso's own variable, no `_FILE` suffix) |
+| `MULTICA_AWS_SSO_PASSPHRASE_FILE` | a **path to a file** that contains the passphrase |
+
+Simplest here is the passphrase in the environment:
+
+```bash
+# .env (read by docker-compose.yml's env_file) or your shell
+AWS_SSO_FILE_PASSWORD='…'
+# then uncomment `AWS_SSO_FILE_PASSWORD: ${AWS_SSO_FILE_PASSWORD:-}` in docker-compose.yml
+```
+
+Or mount it as a file and point `MULTICA_AWS_SSO_PASSPHRASE_FILE` at it:
 
 ```bash
 mkdir -p secrets/aws-sso
 printf '%s' "$AWS_SSO_FILE_PASSWORD" > secrets/aws-sso/AWS_SSO_FILE_PASSWORD
-# uncomment the ./secrets/aws-sso mount and AWS_SSO_FILE_PASSWORD_FILE in docker-compose.yml
+# then uncomment the ./secrets/aws-sso mount and MULTICA_AWS_SSO_PASSPHRASE_FILE
 ```
 
-Without it, agent AWS calls fail closed with `Enter passphrase to unlock
+(`AWS_SSO_FILE_PASSWORD_FILE` is the old name for that path variable; it still
+works but boot warns. Do not use it in new setups.)
+
+Without either, agent AWS calls fail closed with `Enter passphrase to unlock
 "…/secure"` then ``FATAL Must run `aws-sso login` `` even when the operator login
-succeeded. The operator login must use the same passphrase (run it with the mount
-in place); an existing store created from an operator-typed passphrase has to be
-recreated or the Secret set to that value. Details:
+succeeded. The operator login must use the same passphrase: with the env wiring
+it already has it (no prompt); with the file wiring `docker compose exec` does
+not see the boot-time export, so the login prompts and you must type the file's
+value. An existing store created with a different passphrase has to be recreated
+or the secret set to that value. Details:
 [`examples/aws/README.md`](../examples/aws/README.md).
 
 ### Optional egress control (iron-proxy)
