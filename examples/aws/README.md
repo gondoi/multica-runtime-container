@@ -12,6 +12,39 @@ allowlists in a private overlay, not in this tree.
 SSO cache (`cache.json`, etc.) is written under the workspaces volume at
 `.provider-homes/aws-sso/` and survives pod recreate.
 
+## Login workflow: `device_code`, not the default `pkce`
+
+`config.yaml` pins `AuthWorkflow: device_code`. This is required by the
+operator topology, not a taste preference.
+
+- `aws-sso` **>= 2.2.0 defaults to `pkce`** (OAuth `authorization_code` + PKCE).
+  That flow binds a temporary callback listener on `127.0.0.1:<port>` inside the
+  pod's network namespace and waits for the browser to redirect to it.
+- The operator's browser runs on their own machine, outside the cluster, reached
+  through `kubectl exec -it` / `docker compose exec`. Its redirect to
+  `127.0.0.1:<port>` resolves to the operator's machine. It never reaches the pod.
+  Login then waits forever, and **no session is ever cached** — which also
+  blocks the SecureStore fix below, because there is nothing to unlock.
+- `device_code` prints a URL plus a user code, the operator approves it in their
+  own browser, and `aws-sso` polls for the token. No inbound reachability is
+  needed. Upstream documents `pkce` as unsupported on remote/headless hosts for
+  exactly this reason (`docs/config.md`, "AuthWorkflow").
+
+Upstream's valid values are `device_code` and `pkce`. There is no
+`authorization_code` value — `pkce` is that flow.
+
+Bumping the pinned `AWS_SSO_VERSION` re-opens this: a version bump that changes
+an auth default must not be merged without re-checking that `AuthWorkflow` is
+still pinned. `test/unit/aws-sso-config.sh` fails if either config stub loses
+`AuthWorkflow: device_code`, and the boot seam asserts the linked container copy.
+
+Session lifetime with `device_code`: `aws-sso` only started requesting a
+`refresh_token` for this workflow in **2.4.0** (upstream fix for "device_code
+never getting a refresh token, so sessions ended after 8 hours").
+Before 2.4.0 a device-code session had no refresh token, and the operator had to
+log in again every 8 hours. On the version this image pins (2.4.0) the session
+refreshes normally.
+
 ## SecureStore: why agents need a passphrase env var
 
 `config.yaml` pins `SecureStore: file`. That is aws-sso's encrypted file store at
@@ -100,4 +133,22 @@ existing cache via `credential_process` / `--profile`. `aws-sso login` without
 `AWS_SSO_OPERATOR_LOGIN=1` exits non-zero (guard wrapper).
 
 The `-it` matters for more than the guard: it is the TTY that answers the
-SecureStore passphrase prompt when `AWS_SSO_FILE_PASSWORD` is not mounted.
+SecureStore passphrase prompt when `AWS_SSO_FILE_PASSWORD` is not mounted, and it
+is where the `device_code` verification URL and user code are printed.
+
+Expected output on a successful device-code login (aws-sso 2.4.0):
+
+```text
+	Verify this code in your browser: ABCD-EFGH
+Please open the following URL in your browser:
+
+https://device.sso.us-east-1.amazonaws.com/?user_code=ABCD-EFGH
+
+INFO  Waiting for SSO authentication...
+INFO  Refreshing AWS SSO role cache, please wait... sso=Default
+INFO  Updated cache added=N deleted=0
+```
+
+If the printed URL instead looks like
+`https://oidc.<region>.amazonaws.com/authorize?...&redirect_uri=http%3A%2F%2F127.0.0.1%3A<port>&...`,
+`AuthWorkflow` is not pinned and login will hang — see the workflow section above.

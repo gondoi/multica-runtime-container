@@ -187,6 +187,23 @@ kubectl -n multica-runtime exec -it deploy/multica-runtime -- \
   env AWS_SSO_OPERATOR_LOGIN=1 aws-sso login --url-action=print
 ```
 
+#### Login workflow must stay pinned to `device_code`
+
+`aws-configmap.yaml` pins `AuthWorkflow: device_code`. aws-sso >= 2.2.0 defaults
+to `pkce`, which opens the authorization URL in a browser and waits for it to
+redirect to a temporary listener on `127.0.0.1:<port>` **inside the pod**. The
+operator's browser is outside the cluster, so its redirect to `127.0.0.1` goes to
+the operator's own machine, never to the pod: login hangs and no session is
+cached. `device_code` prints a URL plus a user code that the operator approves in
+their own browser, and `aws-sso` polls for the token — no inbound reachability.
+
+Symptom of a missing pin: the printed URL contains
+`redirect_uri=http%3A%2F%2F127.0.0.1%3A<port>` and the command never returns.
+Valid upstream values are `device_code` and `pkce` (there is no
+`authorization_code`). Keep the pin when you bump `AWS_SSO_VERSION`: before 2.4.0
+the `device_code` workflow also got no refresh token, so a session died after 8
+hours (fixed in 2.4.0).
+
 #### aws-sso SecureStore passphrase
 
 aws-sso's encrypted `file` store prompts for a passphrase on every process that
