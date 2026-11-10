@@ -22,6 +22,12 @@ metadata:
     app.kubernetes.io/name: multica-runtime
 data:
   config.yaml: |
+    # SecureStore: file pins aws-sso's encrypted file store — the only backend
+    # available without a keyring daemon in the container. It is passphrase
+    # protected and prompts on every open, so agent tasks (no TTY) need
+    # AWS_SSO_FILE_PASSWORD exported from a Secret (see secret.example.yaml
+    # `multica-runtime-aws-sso-unlock`); no passphrase belongs in this ConfigMap.
+    SecureStore: file
     SSOConfig:
         Default:
             SSORegion: us-east-1

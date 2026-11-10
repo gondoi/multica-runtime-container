@@ -117,6 +117,7 @@ Multica home is **Secret-projected** — there is **no** Multica-home PVC. Only 
 | `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY` | `/run/secrets/git/` | git HTTPS via short-lived App installation tokens (org-safe; preferred when PATs are banned) |
 | `GITHUB_USER`, `GITHUB_PASSWORD` | `/run/secrets/git/` | git HTTPS via username + password — **GitHub Enterprise Server only**, lowest priority |
 | `GITHUB_HOST` | `/run/secrets/git/GITHUB_HOST` | GitHub host for all three GitHub tiers (default `github.com`) |
+| `AWS_SSO_FILE_PASSWORD` | `/run/secrets/aws-sso/AWS_SSO_FILE_PASSWORD` | aws-sso file-SecureStore passphrase — lets a non-TTY agent task's `credential_process` unlock the store (optional; see [AWS profiles](#aws-profiles-configmaps--pvc-cache)) |
 
 Provide **either** a static forge token, **or** the GitHub App trio, **or** a GHES username/password pair — the GitHub tier is picked by precedence (next section). Env vars override files when set. Layout details: [`examples/secrets/`](examples/secrets/). Kubernetes examples: [`examples/k8s/`](examples/k8s/) — usage walkthrough: [`docs/kubernetes.md`](docs/kubernetes.md).
 
@@ -267,6 +268,13 @@ ssh://git@<host>/ → https://<host>/
 Entrypoint links those files into **workspaces PVC** provider homes (`.provider-homes/aws` and `.provider-homes/aws-sso`) so the SSO token cache survives recreate. Published examples ship **generic stubs** only — curated account allowlists stay in a private overlay.
 
 - **`AWS_PROFILE` unset** — callers pass `--profile` / `AWS_PROFILE` per command.
+- **SecureStore passphrase (`AWS_SSO_FILE_PASSWORD`) — required for agent tasks.** aws-sso's `file` SecureStore (the only backend available without a keyring daemon in the container) prompts for its passphrase on every process that opens it. An operator in `kubectl exec -it` / `docker compose exec` can type it; a non-TTY agent task running the profile's `credential_process` (`aws-sso process`) cannot, and fails with `Enter passphrase to unlock "…/secure"` then ``FATAL Must run `aws-sso login` before running `aws-sso process` ``. Boot therefore lifts the passphrase from a mounted Secret file into the upstream-documented `AWS_SSO_FILE_PASSWORD` env var:
+
+| Secret / file | Env var | Purpose |
+| --- | --- | --- |
+| `/run/secrets/aws-sso/AWS_SSO_FILE_PASSWORD` (override with `AWS_SSO_FILE_PASSWORD_FILE`) | `AWS_SSO_FILE_PASSWORD` | Unlocks the aws-sso file SecureStore non-interactively |
+
+The passphrase must match the one the operator login used, so run the operator login with the Secret mounted (a fresh store is then created with that passphrase, no prompt). An existing store created from an operator-typed passphrase must be recreated (`rm -rf <workspaces>/.provider-homes/aws-sso/secure/` then re-login) or the Secret set to that same passphrase. Unset stays fail-closed (previous behavior) and is only reported in the boot `aws auth:` line — it is not a boot gate. Higher-risk, same trust boundary as the harness keys: every task inherits it and can read it from its own env; it protects the PVC cache at rest and is not itself an AWS credential. Never place it in an image, this repo, or a ConfigMap.
 - **Login is operator-exec only.** Agents must not drive SSO:
 
 ```bash

@@ -4,6 +4,16 @@
 #
 # SSO token cache lives beside this file under the workspaces PVC
 # (.provider-homes/aws-sso/), not in this ConfigMap.
+#
+# SecureStore pins aws-sso's encrypted file backend (`$HOME/.config/aws-sso/secure`).
+# The container has no OS keyring daemon (no gnome-keyring/kwallet/D-Bus), so the
+# backend would resolve to `file` anyway; pinning it keeps the path deterministic.
+# The file store is passphrase-protected and prompts on EVERY process that opens
+# it — including the non-TTY `credential_process` (aws-sso process) an agent task
+# runs. Export AWS_SSO_FILE_PASSWORD (from a mounted Secret; never this file) so
+# those calls unlock non-interactively after one operator login. Operator login
+# with the same env set creates/opens the store with that passphrase.
+SecureStore: file
 SSOConfig:
     Default:
         SSORegion: us-east-1
