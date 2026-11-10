@@ -716,10 +716,12 @@ echo "==> Happy path — AWS ConfigMap mounts + SSO cache on workspaces + login 
 cname_aws="multica-boot-seam-aws-$$"
 docker run -d --name "$cname_aws" \
   --env-file "$FIX/happy-projected.env" \
+  -e AWS_SSO_FILE_PASSWORD_FILE=/run/secrets/aws-sso/AWS_SSO_FILE_PASSWORD \
   -v "$STUB:/usr/local/bin/multica:ro" \
   -v "$SECRETS/multica-home:/run/secrets/multica-home:ro" \
   -v "$SECRETS/cursor:/run/secrets/cursor:ro" \
   -v "$SECRETS/git:/run/secrets/git:ro" \
+  -v "$SECRETS/aws-sso:/run/secrets/aws-sso:ro" \
   -v "$AWS_EX/config:/run/config/aws/config:ro" \
   -v "$AWS_EX/config.yaml:/run/config/aws-sso/config.yaml:ro" \
   "$IMAGE" >/dev/null
@@ -783,6 +785,24 @@ if docker exec "$cname_aws" printenv AWS_PROFILE >/dev/null 2>&1; then
   bad "AWS_PROFILE unexpectedly set in container env"
 else
   ok "AWS_PROFILE unset (fail closed default)"
+fi
+
+# aws-sso SecureStore passphrase (BOX-124): lifted from the mounted Secret file
+# into the daemon env so a non-TTY `credential_process` can unlock the encrypted
+# store. Asserted against the daemon env (`docker exec` starts from the image
+# env, not the boot env), and the value must never reach the boot log.
+aws_daemon_pid="$(docker exec "$cname_aws" pgrep -f 'sleep infinity' 2>/dev/null | head -1 || true)"
+if [ -n "$aws_daemon_pid" ] \
+  && docker exec "$cname_aws" bash -c "tr '\\0' '\\n' < /proc/${aws_daemon_pid}/environ | grep -qx 'AWS_SSO_FILE_PASSWORD=boot-seam-fake-passphrase'"; then
+  ok "aws-sso passphrase Secret lifted into the daemon env (AWS_SSO_FILE_PASSWORD)"
+else
+  bad "AWS_SSO_FILE_PASSWORD not in the daemon env from /run/secrets/aws-sso"
+fi
+
+if docker logs "$cname_aws" 2>&1 | grep -q 'boot-seam-fake-passphrase'; then
+  bad "boot log leaked the aws-sso passphrase"
+else
+  ok "aws-sso passphrase never logged"
 fi
 
 echo "==> Happy path — optional egress proxy (iron-proxy): MITM CA trusted, default off"

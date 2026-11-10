@@ -244,6 +244,24 @@ docker compose exec -e AWS_SSO_OPERATOR_LOGIN=1 runtime \
 Agents must not run `aws-sso login` (guard exits non-zero without
 `AWS_SSO_OPERATOR_LOGIN=1`). SSO cache persists on the workspaces volume.
 
+aws-sso's encrypted `file` SecureStore asks for its passphrase on every process
+that opens it. An agent task has no TTY, so `credential_process` can only unlock
+it from `AWS_SSO_FILE_PASSWORD` — mount that passphrase and the entrypoint
+lifts it into the env:
+
+```bash
+mkdir -p secrets/aws-sso
+printf '%s' "$AWS_SSO_FILE_PASSWORD" > secrets/aws-sso/AWS_SSO_FILE_PASSWORD
+# uncomment the ./secrets/aws-sso mount and AWS_SSO_FILE_PASSWORD_FILE in docker-compose.yml
+```
+
+Without it, agent AWS calls fail closed with `Enter passphrase to unlock
+"…/secure"` then ``FATAL Must run `aws-sso login` `` even when the operator login
+succeeded. The operator login must use the same passphrase (run it with the mount
+in place); an existing store created from an operator-typed passphrase has to be
+recreated or the Secret set to that value. Details:
+[`examples/aws/README.md`](../examples/aws/README.md).
+
 ### Optional egress control (iron-proxy)
 
 Default-deny egress through a MITM sidecar is available but **off by default**.

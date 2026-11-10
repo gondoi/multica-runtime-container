@@ -117,6 +117,15 @@ spec:
             #   value: /run/secrets/aws/credentials
             # - name: AWS_REGION
             #   value: us-east-1
+            #
+            # aws-sso SecureStore passphrase (credential_process profiles).
+            # The encrypted file store prompts on every open and agent tasks
+            # have no TTY, so aws-sso process needs AWS_SSO_FILE_PASSWORD. Put
+            # the passphrase in the `multica-runtime-aws-sso-unlock` Secret (see
+            # secret.example.yaml) and uncomment this env var plus the `aws-sso-
+            # unlock` volume/mount below. HIGHER-RISK: every task inherits it.
+            # - name: AWS_SSO_FILE_PASSWORD_FILE
+            #   value: /run/secrets/aws-sso/AWS_SSO_FILE_PASSWORD
           volumeMounts:
             - name: workspaces
               mountPath: /home/agent/workspaces
@@ -145,6 +154,12 @@ spec:
             # Requires the `aws` volume below AND the matching Secret to exist.
             # - name: aws
             #   mountPath: /run/secrets/aws
+            #   readOnly: true
+            # Optional — aws-sso SecureStore passphrase (see the
+            # AWS_SSO_FILE_PASSWORD_FILE env var above). Requires the
+            # `aws-sso-unlock` volume below AND that Secret to exist.
+            # - name: aws-sso-unlock
+            #   mountPath: /run/secrets/aws-sso
             #   readOnly: true
             # AWS ConfigMaps (subPath) — SSO cache on workspaces PVC via
             # entrypoint links under .provider-homes/{aws,aws-sso}/.
@@ -229,6 +244,14 @@ spec:
         #         path: config
         #       - key: credentials
         #         path: credentials
+        # Optional — aws-sso SecureStore passphrase. Uncomment together with the
+        # AWS_SSO_FILE_PASSWORD_FILE env var and the `aws-sso-unlock` mount above.
+        # - name: aws-sso-unlock
+        #   secret:
+        #     secretName: multica-runtime-aws-sso-unlock
+        #     items:
+        #       - key: AWS_SSO_FILE_PASSWORD
+        #         path: AWS_SSO_FILE_PASSWORD
         - name: aws-config
           configMap:
             name: multica-runtime-aws

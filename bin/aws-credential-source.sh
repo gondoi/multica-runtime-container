@@ -19,6 +19,24 @@ config_file="${AWS_CONFIG_FILE:-$aws_home/.aws/config}"
 creds_file="${AWS_SHARED_CREDENTIALS_FILE:-$aws_home/.aws/credentials}"
 profile="${AWS_PROFILE:-default}"
 
+# Append a note about aws-sso file-SecureStore unlock when a profile in the
+# mounted config uses `credential_process = …/aws-sso …`. Those profiles only
+# work from a TTY (the store prompts for its passphrase) unless the
+# upstream-documented AWS_SSO_FILE_PASSWORD is exported — which is what makes an
+# agent task's `credential_process` fail with "Enter passphrase to unlock" then
+# "Must run `aws-sso login`". Prints state only, never the passphrase.
+aws_sso_note() {
+  local cfg="${1:-}"
+  [ -n "$cfg" ] && [ -r "$cfg" ] || return 0
+  command -v grep >/dev/null 2>&1 || return 0
+  grep -qs 'credential_process *=.*aws-sso' "$cfg" || return 0
+  if [ -n "${AWS_SSO_FILE_PASSWORD:-}" ]; then
+    printf '; aws-sso profile(s): SecureStore passphrase is exported — non-TTY credential_process can unlock'
+  else
+    printf '; aws-sso profile(s): AWS_SSO_FILE_PASSWORD unset — non-TTY agent tasks get "Enter passphrase to unlock ~/.config/aws-sso/secure" then "Must run `aws-sso login`" (see README AWS profiles)'
+  fi
+}
+
 # 1. Static keys in the environment win over everything below them.
 if [ -n "${AWS_ACCESS_KEY_ID:-}" ]; then
   session_note=""
@@ -48,7 +66,8 @@ mounted=""
 [ -s "$creds_file" ] && mounted="$creds_file"
 [ -s "$config_file" ] && mounted="${mounted:+$mounted, }$config_file"
 if [ -n "$mounted" ]; then
-  printf 'mounted AWS config (profile %s: %s) — tier 3, lowest priority\n' "$profile" "$mounted"
+  printf 'mounted AWS config (profile %s: %s) — tier 3, lowest priority%s\n' \
+    "$profile" "$mounted" "$(aws_sso_note "$config_file")"
   exit 0
 fi
 
