@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.1](https://github.com/gondoi/multica-runtime-container/compare/v0.5.0...v0.5.1) (2026-11-10)
+
+
+### Bug Fixes
+
+* **aws-sso:** pin AuthWorkflow: device_code so operator login works in a pod ([80168e3](https://github.com/gondoi/multica-runtime-container/commit/80168e3ea0909903410da903d4b515c6f4aa6f62))
+* **renovate:** make dependency bumps release-triggering ([4dcd662](https://github.com/gondoi/multica-runtime-container/commit/4dcd66294e41584144eecec476e9ecfa1b9550fb))
+
 ## [0.5.0](https://github.com/gondoi/multica-runtime-container/compare/v0.4.0...v0.5.0) (2026-11-10)
 
 
