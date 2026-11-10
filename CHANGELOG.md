@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/gondoi/multica-runtime-container/compare/v0.4.0...v0.5.0) (2026-11-10)
+
+
+### Features
+
+* **aws-sso:** unlock the file SecureStore non-interactively for agent tasks ([785da65](https://github.com/gondoi/multica-runtime-container/commit/785da651e9fc0d7c0648dccc7e7902ec9b6f05d7))
+
 ## [0.4.0](https://github.com/gondoi/multica-runtime-container/compare/v0.3.0...v0.4.0) (2026-11-09)
 
 
