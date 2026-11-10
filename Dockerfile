@@ -52,7 +52,7 @@ ARG GH_VERSION=2.103.3
 # AWS CLI v2 (pinned). No baked-in credentials — see README AWS auth tiers.
 ARG AWS_CLI_VERSION=2.40.0
 # Upstream synfinatic/aws-sso-cli (not fuel-internal -eks). Pin deliberately.
-ARG AWS_SSO_VERSION=2.4.0
+ARG AWS_SSO_VERSION=2.4.1
 
 # ── System deps (language-agnostic) ──────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
