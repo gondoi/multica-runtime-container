@@ -26,7 +26,8 @@ clear_aws_env() {
   unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
     AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE AWS_PROFILE \
     AWS_CONTAINER_CREDENTIALS_RELATIVE_URI AWS_CONTAINER_CREDENTIALS_FULL_URI \
-    AWS_CONFIG_FILE AWS_SHARED_CREDENTIALS_FILE AWS_SSO_FILE_PASSWORD
+    AWS_CONFIG_FILE AWS_SHARED_CREDENTIALS_FILE AWS_SSO_FILE_PASSWORD \
+    MULTICA_AWS_SSO_PASSPHRASE_SOURCE
 }
 
 source_of() {
@@ -108,10 +109,22 @@ expect_contains "aws-sso profile without passphrase is called out" \
   "AWS_SSO_FILE_PASSWORD unset"
 expect_contains "aws-sso profile names the fatal repro" "Must run" 
 expect_contains "aws-sso profile with passphrase exported" \
-  "SecureStore passphrase is exported" \
+  "passphrase loaded from env" \
   "AWS_SSO_FILE_PASSWORD=SECRETPASSPHRASE"
 expect_absent "passphrase value never printed in the aws-sso note" "SECRETPASSPHRASE" \
   "AWS_SSO_FILE_PASSWORD=SECRETPASSPHRASE"
+# Boot names the source so "which wiring is this pod using?" is answerable.
+expect_contains "env-sourced passphrase reported as such" \
+  "passphrase loaded from env" \
+  "AWS_SSO_FILE_PASSWORD=SECRETPASSPHRASE" \
+  "MULTICA_AWS_SSO_PASSPHRASE_SOURCE=env"
+expect_contains "file-sourced passphrase names the file path" \
+  "passphrase loaded from file:/run/secrets/aws-sso/AWS_SSO_FILE_PASSWORD" \
+  "AWS_SSO_FILE_PASSWORD=SECRETPASSPHRASE" \
+  "MULTICA_AWS_SSO_PASSPHRASE_SOURCE=file:/run/secrets/aws-sso/AWS_SSO_FILE_PASSWORD"
+expect_absent "file path note never prints the passphrase" "SECRETPASSPHRASE" \
+  "AWS_SSO_FILE_PASSWORD=SECRETPASSPHRASE" \
+  "MULTICA_AWS_SSO_PASSPHRASE_SOURCE=file:/run/secrets/aws-sso/AWS_SSO_FILE_PASSWORD"
 
 # No aws-sso profile in the mounted config → note stays out of the way.
 printf '[default]\nregion = us-east-1\n' >"$HOME/.aws/config"

@@ -215,26 +215,53 @@ hours (fixed in 2.4.0).
 
 #### aws-sso SecureStore passphrase
 
-aws-sso's encrypted `file` store prompts for a passphrase on every process that
+aws-sso's encrypted `file` store asks for a passphrase on every process that
 opens it. Agent tasks run without a TTY, so the profile's `credential_process`
 (`aws-sso process`) can only unlock it from `AWS_SSO_FILE_PASSWORD` — otherwise
 every agent AWS call fails with `Enter passphrase to unlock "…/secure"` then
 ``FATAL Must run `aws-sso login` `` even after a successful operator login.
 
-1. Create the `multica-runtime-aws-sso-unlock` Secret (see
-   `secret.example.yaml`) with key `AWS_SSO_FILE_PASSWORD`.
-2. Uncomment the `AWS_SSO_FILE_PASSWORD_FILE` env var and the
-   `aws-sso-unlock` volume + mount in `deployment.yaml`.
-3. Roll the pod, then run the operator login with that Secret in place: a fresh
-   store is created with this passphrase, no prompt. An existing store created
-   from an operator-typed passphrase keeps failing closed — set the Secret to
-   that passphrase or delete `<workspaces>/.provider-homes/aws-sso/secure/` on
-   the PVC and re-login.
+Two names, easy to mix up, not interchangeable:
+
+| Variable | Value | Wiring |
+| --- | --- | --- |
+| `AWS_SSO_FILE_PASSWORD` | the **passphrase** (aws-sso's own, no `_FILE` suffix) | `secretKeyRef` → env — **recommended** |
+| `MULTICA_AWS_SSO_PASSPHRASE_FILE` | a **path to a file** holding the passphrase | Secret mounted as a file |
+
+Recommended (`secretKeyRef`, one Secret key, no mount):
+
+```yaml
+- name: AWS_SSO_FILE_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: multica-runtime-aws-sso-unlock   # any Secret name; overlays may differ
+      key: AWS_SSO_FILE_PASSWORD
+```
+
+The Secret key holds the passphrase itself. The only `_FILE`-shaped name is the
+optional path variable; `AWS_SSO_FILE_PASSWORD_FILE` is its old, deprecated name
+(still honoured, boot warns).
+
+Why the env wiring is preferred, verified on the released image:
+
+- The value is in the pod env, so the daemon, every task **and** an interactive
+  `kubectl exec` session inherit it. `credential_process` unlocks, and the
+  operator login never prompts — so it cannot pick a different passphrase than
+  the agents use.
+- The file wiring exports the value into the daemon env only. Tasks are fine,
+  but a later `kubectl exec` operator login prompts (`Select password:` /
+  `Enter passphrase to unlock …`) and must be given the file's exact contents.
+
+Steps for the env wiring: create the Secret, add the `secretKeyRef` env var,
+roll the pod, then run the operator login (a fresh store is created with this
+passphrase, no prompt). If an existing store used a different passphrase, delete
+`<workspaces>/.provider-homes/aws-sso/secure/` on the PVC first, or set the
+Secret to that value.
 
 `AWS_SSO_FILE_PASSWORD` unset is not a boot failure: boot only reports it in the
-`aws auth:` line. Same risk note as the harness keys — every task inherits the
-passphrase and can read it from its own env; it protects the PVC cache at rest
-and is not an AWS credential.
+`aws auth:` line, which also names the source (`env` or `file:<path>`). Same risk
+note as the harness keys — every task can read the passphrase (env or mounted
+file alike); it protects the PVC cache at rest and is not an AWS credential.
 
 ### Egress control (not provided yet)
 

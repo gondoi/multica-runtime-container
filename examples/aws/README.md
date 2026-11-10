@@ -111,51 +111,107 @@ FATAL Must run `aws-sso login` before running `aws-sso process`
 
 …even though a valid cached session is sitting in that store.
 
-**Fix: export `AWS_SSO_FILE_PASSWORD`.** It is the upstream-documented
-non-interactive source for the `file` backend (aws-sso-cli 2.1.0,
-`internal/storage/keyring.go` → `fileKeyringPassword`; `docs/config.md`
-"SecureStore / JsonStore"). Boot lifts it from a mounted Secret file:
+**Fix: give aws-sso its passphrase through `AWS_SSO_FILE_PASSWORD`.** That is the
+upstream-documented non-interactive source for the `file` backend
+(`internal/storage/keyring.go` → `fileKeyringPassword`; upstream `docs/config.md`,
+"SecureStore / JsonStore").
 
-| Path | Purpose |
-| --- | --- |
-| `/run/secrets/aws-sso/AWS_SSO_FILE_PASSWORD` | Passphrase for the aws-sso file SecureStore (one line) |
+### The two names — this is the foot-gun
 
-Override the path with `AWS_SSO_FILE_PASSWORD_FILE`. Never put the passphrase in
-this repo, the image, or a ConfigMap — it belongs in a Secret:
+There are two variables and they look alike. Only one of them is a secret.
+
+| Name | What it is | Set it? |
+| --- | --- | --- |
+| `AWS_SSO_FILE_PASSWORD` | **The passphrase itself.** aws-sso's own variable. | Yes — recommended |
+| `MULTICA_AWS_SSO_PASSPHRASE_FILE` | **A path to a file** that contains the passphrase. Image-side convenience, not aws-sso's. | Only if you mount the passphrase as a file |
+
+The rule: in this repo a `*_FILE` variable always names a **path**, never a secret
+value. `AWS_SSO_FILE_PASSWORD` ends in `PASSWORD`, not `_FILE`, because its value
+is the passphrase. (The old `AWS_SSO_FILE_PASSWORD_FILE` was the path variable
+with a `_FILE` on top of a name that already said `FILE_PASSWORD`; it still works
+but boot logs a deprecation warning. Do not use it in new deployments.)
+
+### Recommended: the passphrase directly in the environment
+
+```yaml
+# Kubernetes — Secret key holds the passphrase, no `_FILE` anywhere
+- name: AWS_SSO_FILE_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: multica-runtime-aws-sso-unlock   # any Secret name works
+      key: AWS_SSO_FILE_PASSWORD
+```
+
+```bash
+# Compose — export it (or put it in .env)
+export AWS_SSO_FILE_PASSWORD='…'
+```
+
+Why this is preferred, verified on the released image:
+
+- It reaches **every** process: the daemon, every task it spawns, and an
+  interactive `kubectl exec` session. Agent `credential_process` works, **and**
+  the operator login runs without a passphrase prompt, so the operator cannot
+  accidentally type a different passphrase than the agents use.
+- No mount, no file, nothing to keep in sync.
+- `AWS_SSO_FILE_PASSWORD` is in the container env, so it is also visible to
+  `kubectl exec … env`. That is the same trust boundary as the harness keys: the
+  agent user can read the passphrase either way (env or mounted file).
+
+### Alternative: the passphrase as a mounted file
+
+```yaml
+- name: MULTICA_AWS_SSO_PASSPHRASE_FILE       # note: this one IS a path
+  value: /run/secrets/aws-sso/AWS_SSO_FILE_PASSWORD
+# + mount the Secret at /run/secrets/aws-sso (key/file name: AWS_SSO_FILE_PASSWORD)
+```
 
 ```bash
 # Compose
 mkdir -p secrets/aws-sso
 printf '%s' "$AWS_SSO_FILE_PASSWORD" > secrets/aws-sso/AWS_SSO_FILE_PASSWORD
-# then uncomment the ./secrets/aws-sso mount and AWS_SSO_FILE_PASSWORD_FILE in
-# docker-compose.yml
+# then uncomment the mount and MULTICA_AWS_SSO_PASSPHRASE_FILE in docker-compose.yml
 ```
 
-```yaml
-# Kubernetes — see examples/k8s/secret.example.yaml (multica-runtime-aws-sso-unlock)
-# and the commented AWS_SSO_FILE_PASSWORD_FILE env var + mount in deployment.yaml
-```
+Default path when the variable is unset:
+`/run/secrets/aws-sso/AWS_SSO_FILE_PASSWORD`.
+
+Trade-off, also verified on the image: boot exports the passphrase into the
+daemon env **only**. Tasks inherit it, but a later `kubectl exec` session does
+not — so `aws-sso login` prompts `Select password:` / `Enter passphrase to
+unlock …`, and whatever you type must equal the file's contents. If it differs,
+the store is encrypted under a different passphrase than the agents have, and
+agents fail closed again. Prefer the environment form unless you have a specific
+reason to avoid env vars.
+
+Never put the passphrase in this repo, the image, or a ConfigMap.
 
 ### Same passphrase on both sides
 
 The operator login and the agents' `credential_process` open the same store, so
 they must use the same passphrase:
 
-- **Empty PVC / first login:** with the Secret mounted, `aws-sso login` never
-  prompts — it creates the store with `AWS_SSO_FILE_PASSWORD`. No interactive
-  passphrase is needed for a fresh install.
-- **Existing store** created from an operator-typed passphrase: set the Secret to
-  that same passphrase, or delete `<workspaces>/.provider-homes/aws-sso/secure/`
-  and re-run the operator login so the store is recreated with the Secret's
+- **Recommended (env) wiring:** nothing to do — the operator login already has
+  the value; a fresh store is created with it and never prompts.
+- **File wiring — empty PVC:** the login prompts; type the file's exact contents.
+- **Existing store** created with a different passphrase: set the Secret to that
+  same passphrase, or delete `<workspaces>/.provider-homes/aws-sso/secure/` and
+  re-run the operator login so the store is recreated with the Secret's
   passphrase. Otherwise agents keep failing closed with the same `FATAL`.
 - Wrong passphrase fails closed exactly like a locked store (same `FATAL`); it
   never falls back to a prompt.
 
-Boot reports the state without printing the value — look for
-`aws auth: mounted AWS config (…)` in the boot log, which names the tier and
-appends `aws-sso profile(s): SecureStore passphrase is exported …` or
-`aws-sso profile(s): AWS_SSO_FILE_PASSWORD unset — …`. Unset is a warning, not a
-boot gate: a deployment that never uses aws-sso profiles is unaffected.
+Boot reports the state and the source, without printing the value — look for the
+`aws auth:` line, which ends in one of:
+
+```text
+aws-sso profile(s): passphrase loaded from env — non-TTY credential_process can unlock
+aws-sso profile(s): passphrase loaded from file:/run/secrets/aws-sso/AWS_SSO_FILE_PASSWORD — …
+aws-sso profile(s): AWS_SSO_FILE_PASSWORD unset — non-TTY agent tasks get "Enter passphrase to unlock …" then "Must run `aws-sso login`"
+```
+
+Unset is a warning, not a boot gate: a deployment that never uses aws-sso
+profiles is unaffected.
 
 **Risk to review before merging:** the passphrase lands in the daemon
 environment, so every agent task inherits it (same trust boundary as the harness
@@ -179,8 +235,11 @@ existing cache via `credential_process` / `--profile`. `aws-sso login` without
 `AWS_SSO_OPERATOR_LOGIN=1` exits non-zero (guard wrapper).
 
 The `-it` matters for more than the guard: it is the TTY that answers the
-SecureStore passphrase prompt when `AWS_SSO_FILE_PASSWORD` is not mounted, and it
-is where the `device_code` verification URL and user code are printed.
+SecureStore passphrase prompt, and it is where the `device_code` verification URL
+and user code are printed. With the recommended wiring
+(`AWS_SSO_FILE_PASSWORD` in the pod env) there is no passphrase prompt at all;
+with the file wiring (`MULTICA_AWS_SSO_PASSPHRASE_FILE`) the prompt appears and
+you must type the file's exact contents.
 
 Expected output on a successful device-code login (aws-sso 2.4.0):
 

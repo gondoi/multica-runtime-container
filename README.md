@@ -269,13 +269,25 @@ Entrypoint links those files into **workspaces PVC** provider homes (`.provider-
 
 - **`AWS_PROFILE` unset** — callers pass `--profile` / `AWS_PROFILE` per command.
 - **Login workflow pinned to `device_code`.** aws-sso >= 2.2.0 defaults to `pkce`, which waits for the browser to redirect to a loopback listener (`127.0.0.1:<port>`) inside the pod's network namespace. The operator's browser runs outside the cluster, so that redirect never arrives, login hangs, and no session is cached. The example `config.yaml` therefore pins `AuthWorkflow: device_code` (prints a URL + user code, operator approves in their own browser — no inbound reachability). Valid upstream values are `device_code` and `pkce`; there is no `authorization_code` value. Re-check this pin on every `AWS_SSO_VERSION` bump: [`test/unit/aws-sso-config.sh`](test/unit/aws-sso-config.sh) and the boot seam guard it. The pin is **consumer config, not image code**: releasing an image does not add it to a cluster ConfigMap, `subPath` ConfigMap mounts need a pod restart, and boot reports the value it actually linked (`aws-sso config: AuthWorkflow=device_code` / `WARN: … no 'AuthWorkflow: device_code'`). Precedence and the two silent ways it is lost (`~/.aws-sso` legacy dir, `AuthWorkflow` nested under `SSOConfig`) are in [`examples/aws/README.md`](examples/aws/README.md).
-- **SecureStore passphrase (`AWS_SSO_FILE_PASSWORD`) — required for agent tasks.** aws-sso's `file` SecureStore (the only backend available without a keyring daemon in the container) prompts for its passphrase on every process that opens it. An operator in `kubectl exec -it` / `docker compose exec` can type it; a non-TTY agent task running the profile's `credential_process` (`aws-sso process`) cannot, and fails with `Enter passphrase to unlock "…/secure"` then ``FATAL Must run `aws-sso login` before running `aws-sso process` ``. Boot therefore lifts the passphrase from a mounted Secret file into the upstream-documented `AWS_SSO_FILE_PASSWORD` env var:
+- **SecureStore passphrase (`AWS_SSO_FILE_PASSWORD`) — required for agent tasks.** aws-sso's `file` SecureStore (the only backend available without a keyring daemon in the container) prompts for its passphrase on every process that opens it. An operator in `kubectl exec -it` / `docker compose exec` can type it; a non-TTY agent task running the profile's `credential_process` (`aws-sso process`) cannot, and fails with `Enter passphrase to unlock "…/secure"` then ``FATAL Must run `aws-sso login` before running `aws-sso process` ``. aws-sso reads the passphrase from **`AWS_SSO_FILE_PASSWORD`** — its own variable, no `_FILE` suffix, because the value *is* the passphrase. Recommended wiring is a Secret via `secretKeyRef`:
 
-| Secret / file | Env var | Purpose |
+| Variable | Value | What it is |
 | --- | --- | --- |
-| `/run/secrets/aws-sso/AWS_SSO_FILE_PASSWORD` (override with `AWS_SSO_FILE_PASSWORD_FILE`) | `AWS_SSO_FILE_PASSWORD` | Unlocks the aws-sso file SecureStore non-interactively |
+| `AWS_SSO_FILE_PASSWORD` | the passphrase | aws-sso's own; reaches the daemon, every task, **and** an interactive `kubectl exec` operator login |
+| `MULTICA_AWS_SSO_PASSPHRASE_FILE` | a **path** to a file holding it (default `/run/secrets/aws-sso/AWS_SSO_FILE_PASSWORD`) | image-side, file wiring only |
 
-The passphrase must match the one the operator login used, so run the operator login with the Secret mounted (a fresh store is then created with that passphrase, no prompt). An existing store created from an operator-typed passphrase must be recreated (`rm -rf <workspaces>/.provider-homes/aws-sso/secure/` then re-login) or the Secret set to that same passphrase. Unset stays fail-closed (previous behavior) and is only reported in the boot `aws auth:` line — it is not a boot gate. Higher-risk, same trust boundary as the harness keys: every task inherits it and can read it from its own env; it protects the PVC cache at rest and is not itself an AWS credential. Never place it in an image, this repo, or a ConfigMap.
+Rule: in this repo a `*_FILE` variable is always a path, never a secret value. `AWS_SSO_FILE_PASSWORD_FILE` is the old, deprecated name for the path variable — still honoured, boot logs a warning. With the file wiring the passphrase reaches the daemon and its tasks only, so an interactive `kubectl exec` operator login prompts and must be given the same value; with the env wiring it never prompts. Exact wording and both YAML snippets: [`examples/aws/README.md`](examples/aws/README.md).
+
+The passphrase must match the one the operator login used. With the env wiring that
+is automatic (fresh store created from it, no prompt); with the file wiring the login
+prompts and must be given the file's exact value. An existing store created with a
+different passphrase must be recreated (`rm -rf <workspaces>/.provider-homes/aws-sso/secure/`
+then re-login) or the Secret set to that value. Unset stays fail-closed and is only
+reported in the boot `aws auth:` line (which also names the source: `env` or
+`file:<path>`) — it is not a boot gate. Higher-risk, same trust boundary as the harness
+keys: every task can read it (env or mounted file alike); it protects the PVC cache at
+rest and is not itself an AWS credential. Never place it in an image, this repo, or a
+ConfigMap.
 - **Login is operator-exec only.** Agents must not drive SSO:
 
 ```bash

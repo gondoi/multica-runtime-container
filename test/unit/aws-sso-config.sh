@@ -80,5 +80,44 @@ else
   bad "config.yaml does not explain why AuthWorkflow is pinned (loopback/pkce)"
 fi
 
+# --- aws-sso passphrase variable naming (BOX-124 follow-up) -----------------
+# Two names that must not be confused: AWS_SSO_FILE_PASSWORD is the passphrase
+# (aws-sso's own variable, no _FILE), MULTICA_AWS_SSO_PASSPHRASE_FILE is a path to
+# a file holding it. The old AWS_SSO_FILE_PASSWORD_FILE is deprecated: it stays
+# supported in bin/materialize-secrets.sh, but no example/deployment doc may teach
+# it, and the deployment example must show the recommended secretKeyRef wiring.
+DEPLOY="$ROOT/examples/k8s/deployment.yaml"
+SECRET_EX="$ROOT/examples/k8s/secret.example.yaml"
+
+if grep -q 'MULTICA_AWS_SSO_PASSPHRASE_FILE' "$DEPLOY" \
+  && grep -q 'name: AWS_SSO_FILE_PASSWORD' "$DEPLOY" \
+  && grep -q 'secretKeyRef' "$DEPLOY"; then
+  ok "deployment example documents secretKeyRef (recommended) + the _FILE path variant"
+else
+  bad "deployment example lost the recommended secretKeyRef wiring or the path variant"
+fi
+
+stale=""
+for f in "$DEPLOY" "$SECRET_EX" "$ROOT/docker-compose.yml" \
+  "$ROOT/README.md" "$ROOT/docs/kubernetes.md" "$ROOT/docs/docker.md" \
+  "$ROOT/examples/aws/README.md" "$ROOT/examples/secrets/README.md"; do
+  # Any surviving mention must be in deprecation/contrast context, never a
+  # bare instruction line such as `# - name: AWS_SSO_FILE_PASSWORD_FILE`.
+  if grep -qE '^[^#]*AWS_SSO_FILE_PASSWORD_FILE:[[:space:]]*/' "$f" 2>/dev/null; then
+    stale="$stale $f"
+  fi
+done
+if [ -z "$stale" ]; then
+  ok "no doc/example still instructs AWS_SSO_FILE_PASSWORD_FILE as a setting"
+else
+  bad "deprecated AWS_SSO_FILE_PASSWORD_FILE still used as a setting in:$stale"
+fi
+
+if grep -q 'deprecated' "$SECRET_EX" && grep -q 'MULTICA_AWS_SSO_PASSPHRASE_FILE' "$SECRET_EX"; then
+  ok "secret.example.yaml states the naming rule for both variables"
+else
+  bad "secret.example.yaml does not explain the passphrase/path variable names"
+fi
+
 printf '\n%s/%s checks passed\n' "$pass" "$((pass + fail))"
 [ "$fail" = 0 ]
