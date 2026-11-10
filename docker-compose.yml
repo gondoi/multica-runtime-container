@@ -10,6 +10,9 @@
 #   # optional OpenAI Codex harness (MULTICA_AGENT_CLI=codex):
 #   printf '%s' "$OPENAI_API_KEY" > secrets/codex/OPENAI_API_KEY
 #   printf '%s' "$GITHUB_TOKEN"   > secrets/git/GITHUB_TOKEN
+#   # optional aws-sso profiles: SecureStore passphrase for non-TTY tasks
+#   mkdir -p secrets/aws-sso
+#   printf '%s' "$AWS_SSO_FILE_PASSWORD" > secrets/aws-sso/AWS_SSO_FILE_PASSWORD
 #   # optional: still use .env for non-secret knobs (URLs, workspace id)
 #   cp .env.example .env
 #   docker compose up -d --build
@@ -28,7 +31,9 @@
 #   - Multica home is Secret-projected / bind-mounted — NOT a named volume
 #   - AWS config stubs: bind-mount examples/aws (replace with private allowlist)
 #
-# Operator AWS SSO login (after healthy):
+# Operator AWS SSO login (after healthy). Keep AWS_SSO_FILE_PASSWORD set from
+# the mounted Secret so the operator login and the agents' credential_process
+# open the same encrypted store (see examples/aws/README.md):
 #   docker compose exec -e AWS_SSO_OPERATOR_LOGIN=1 runtime \
 #     aws-sso login --url-action=print
 
@@ -71,6 +76,12 @@ services:
       # Optional static-key fallback (uncomment with secrets/aws mount):
       # AWS_CONFIG_FILE: /run/secrets/aws/config
       # AWS_SHARED_CREDENTIALS_FILE: /run/secrets/aws/credentials
+      # aws-sso SecureStore passphrase (Identity Center profiles). aws-sso's
+      # encrypted `file` store asks for a passphrase on every process that opens
+      # it; agent tasks have no TTY, so `credential_process` needs this env var
+      # (upstream-documented) or it fails with "Enter passphrase to unlock …" /
+      # "Must run `aws-sso login`". Uncomment with the secrets/aws-sso mount.
+      # AWS_SSO_FILE_PASSWORD_FILE: /run/secrets/aws-sso/AWS_SSO_FILE_PASSWORD
     volumes:
       # Workspaces PVC role: .repos bare cache, task worktrees, asdf data, provider homes.
       - multica-workspaces:/home/agent/workspaces
@@ -82,6 +93,9 @@ services:
       - ./secrets/git:/run/secrets/git:ro
       # Optional — AWS auth tier 3 static keys (mounted config/credentials).
       # - ./secrets/aws:/run/secrets/aws:ro
+      # Optional — aws-sso SecureStore passphrase (one line, no trailing newline
+      # needed). Uncomment both this mount and AWS_SSO_FILE_PASSWORD_FILE above.
+      # - ./secrets/aws-sso:/run/secrets/aws-sso:ro
       # AWS ConfigMap / aws-sso parity (generic stubs; override for private allowlist).
       - ./examples/aws/config:/run/config/aws/config:ro
       - ./examples/aws/config.yaml:/run/config/aws-sso/config.yaml:ro

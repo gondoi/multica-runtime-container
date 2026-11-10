@@ -26,7 +26,7 @@ clear_aws_env() {
   unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN \
     AWS_ROLE_ARN AWS_WEB_IDENTITY_TOKEN_FILE AWS_PROFILE \
     AWS_CONTAINER_CREDENTIALS_RELATIVE_URI AWS_CONTAINER_CREDENTIALS_FULL_URI \
-    AWS_CONFIG_FILE AWS_SHARED_CREDENTIALS_FILE
+    AWS_CONFIG_FILE AWS_SHARED_CREDENTIALS_FILE AWS_SSO_FILE_PASSWORD
 }
 
 source_of() {
@@ -98,6 +98,25 @@ expect_contains "missing mounted file called out" "missing or empty" \
 
 rm -rf "$HOME/.aws"
 expect_contains "nothing wired is reported" "none detected" 
+
+# aws-sso credential_process profiles (BOX-124): the boot line must say whether
+# the file-SecureStore passphrase is exported, without ever printing it.
+mkdir -p "$HOME/.aws"
+printf '[profile Example:ReadOnly]\ncredential_process = /usr/local/bin/aws-sso -S "Default" process --arn arn:aws:iam::111111111111:role/ReadOnly\n' \
+  >"$HOME/.aws/config"
+expect_contains "aws-sso profile without passphrase is called out" \
+  "AWS_SSO_FILE_PASSWORD unset"
+expect_contains "aws-sso profile names the fatal repro" "Must run" 
+expect_contains "aws-sso profile with passphrase exported" \
+  "SecureStore passphrase is exported" \
+  "AWS_SSO_FILE_PASSWORD=SECRETPASSPHRASE"
+expect_absent "passphrase value never printed in the aws-sso note" "SECRETPASSPHRASE" \
+  "AWS_SSO_FILE_PASSWORD=SECRETPASSPHRASE"
+
+# No aws-sso profile in the mounted config → note stays out of the way.
+printf '[default]\nregion = us-east-1\n' >"$HOME/.aws/config"
+expect_absent "no aws-sso note without a credential_process profile" "aws-sso profile(s)"
+rm -rf "$HOME/.aws"
 
 # Contract: always exits 0 — a detection mistake must never fail a boot.
 clear_aws_env

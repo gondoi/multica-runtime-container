@@ -25,6 +25,7 @@
 #   ${GITHUB_APP_ID_FILE:-/run/secrets/git/GITHUB_APP_ID}
 #   ${GITHUB_APP_INSTALLATION_ID_FILE:-/run/secrets/git/GITHUB_APP_INSTALLATION_ID}
 #   ${GITHUB_APP_PRIVATE_KEY_FILE:-/run/secrets/git/GITHUB_APP_PRIVATE_KEY}
+#   ${AWS_SSO_FILE_PASSWORD_FILE:-/run/secrets/aws-sso/AWS_SSO_FILE_PASSWORD}
 #
 # Env vars already set win over files. Exit 1 on unrecoverable misconfig.
 set -euo pipefail
@@ -135,6 +136,18 @@ if [ -z "${GITHUB_APP_PRIVATE_KEY:-}" ]; then
 fi
 # Always export file path for mint script (file mount preferred over env echo).
 export GITHUB_APP_PRIVATE_KEY_FILE="${GITHUB_APP_PRIVATE_KEY_FILE:-/run/secrets/git/GITHUB_APP_PRIVATE_KEY}"
+
+# ── aws-sso SecureStore passphrase (file backend unlock) ──────────────────
+# aws-sso's `file` SecureStore encrypts the token/role cache with a passphrase
+# and asks for it on every process that opens the store. Agent tasks have no
+# TTY, so `credential_process` (`aws-sso process`) can only unlock it
+# non-interactively from AWS_SSO_FILE_PASSWORD — the upstream-documented env var
+# (aws-sso-cli 2.1.0: internal/storage/keyring.go, `fileKeyringPassword`).
+# Optional: unset keeps the previous fail-closed behavior (agents see
+# "Enter passphrase to unlock …" then "Must run `aws-sso login`"). The value is
+# never logged and is inherited by tasks like the other provider secrets.
+read_secret_file AWS_SSO_FILE_PASSWORD \
+  "${AWS_SSO_FILE_PASSWORD_FILE:-/run/secrets/aws-sso/AWS_SSO_FILE_PASSWORD}"
 
 # Persist daemon.id into Multica home when only env provided (compose convenience).
 if [ ! -f "$MULTICA_HOME/daemon.id" ] && [ -n "${MULTICA_DAEMON_ID:-}" ]; then

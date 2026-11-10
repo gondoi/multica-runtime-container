@@ -24,7 +24,7 @@ ARG ASDF_VERSION=v0.20.2
 # no checksum file, so the cursor-agent tarball is pinned by per-target SHA-256
 # — bump those together with CURSOR_AGENT_VERSION (see README "Checksum
 # verification and version bumps").
-ARG MULTICA_VERSION=0.8.1
+ARG MULTICA_VERSION=0.8.2
 ARG CURSOR_AGENT_VERSION=2026.11.05-86047df
 ARG CURSOR_AGENT_PACKAGE_SHA256_LINUX_X64=170b77786cbf4c93064d64fff12b71a178b968730561c64afc2e8e752535442e
 ARG CURSOR_AGENT_PACKAGE_SHA256_LINUX_ARM64=131554bfdbf683d8ebfef83a2bb46ac4e5d060f198711040b07ed063c2471871
@@ -32,7 +32,7 @@ ARG CURSOR_AGENT_PACKAGE_SHA256_LINUX_ARM64=131554bfdbf683d8ebfef83a2bb46ac4e5d0
 # verified against downloads.claude.ai's manifest. INSTALL_CLAUDE_CLI=false
 # produces a Cursor-only image (~330 MB smaller) for deployments that never run
 # the claude harness — the boot gate then rejects MULTICA_AGENT_CLI=claude.
-ARG CLAUDE_CODE_VERSION=2.1.316
+ARG CLAUDE_CODE_VERSION=2.1.322
 ARG INSTALL_CLAUDE_CLI=true
 # OpenAI Codex CLI (native Rust binary, no Node in the image). Pinned to a
 # github.com/openai/codex release tag and checksum-verified against the SHA-256
@@ -52,7 +52,7 @@ ARG GH_VERSION=2.103.3
 # AWS CLI v2 (pinned). No baked-in credentials — see README AWS auth tiers.
 ARG AWS_CLI_VERSION=2.31.11
 # Upstream synfinatic/aws-sso-cli (not fuel-internal -eks). Pin deliberately.
-ARG AWS_SSO_VERSION=2.1.0
+ARG AWS_SSO_VERSION=2.4.0
 
 # ── System deps (language-agnostic) ──────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \

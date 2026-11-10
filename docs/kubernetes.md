@@ -165,7 +165,7 @@ Prefer the SDK default chain first; ConfigMap profiles cover homelab without IRS
 | --- | --- | --- | --- |
 | 1 · IRSA (EKS, preferred) | IAM role whose trust policy federates the cluster's OIDC provider to `system:serviceaccount:multica-runtime:multica-runtime`; EKS then projects `AWS_WEB_IDENTITY_TOKEN_FILE` + `AWS_ROLE_ARN` automatically | uncomment `eks.amazonaws.com/role-arn` in `serviceaccount.yaml` | No |
 | 2 · Instance / ECS task role | Node instance profile (EC2) or task role (ECS) — the SDK calls IMDS/container endpoint on its own | none | No |
-| 3a · aws-sso ConfigMaps | Curated `~/.aws/config` + aws-sso YAML; SSO cache on workspaces PVC | `aws-configmap.yaml` + Deployment mounts (already in examples) | No |
+| 3a · aws-sso ConfigMaps | Curated `~/.aws/config` + aws-sso YAML; SSO cache on workspaces PVC. Needs the [`multica-runtime-aws-sso-unlock`](#aws-sso-securestore-passphrase) Secret for non-TTY `credential_process` | `aws-configmap.yaml` + Deployment mounts (already in examples) | No (passphrase Secret only) |
 | 3b · Mounted static config | Secret with `config` / `credentials`, pointed at by `AWS_CONFIG_FILE` / `AWS_SHARED_CREDENTIALS_FILE` | uncomment the AWS env vars, `volumeMounts.aws`, and `volumes.aws` in `deployment.yaml`, plus the optional Secret in `secret.example.yaml` | Yes — avoid when tiers 1–3a exist |
 
 Grant the role only what agent tasks actually need (`sts:GetCallerIdentity`,
@@ -186,6 +186,29 @@ For ConfigMap / aws-sso profiles, login is **operator-exec only**:
 kubectl -n multica-runtime exec -it deploy/multica-runtime -- \
   env AWS_SSO_OPERATOR_LOGIN=1 aws-sso login --url-action=print
 ```
+
+#### aws-sso SecureStore passphrase
+
+aws-sso's encrypted `file` store prompts for a passphrase on every process that
+opens it. Agent tasks run without a TTY, so the profile's `credential_process`
+(`aws-sso process`) can only unlock it from `AWS_SSO_FILE_PASSWORD` — otherwise
+every agent AWS call fails with `Enter passphrase to unlock "…/secure"` then
+``FATAL Must run `aws-sso login` `` even after a successful operator login.
+
+1. Create the `multica-runtime-aws-sso-unlock` Secret (see
+   `secret.example.yaml`) with key `AWS_SSO_FILE_PASSWORD`.
+2. Uncomment the `AWS_SSO_FILE_PASSWORD_FILE` env var and the
+   `aws-sso-unlock` volume + mount in `deployment.yaml`.
+3. Roll the pod, then run the operator login with that Secret in place: a fresh
+   store is created with this passphrase, no prompt. An existing store created
+   from an operator-typed passphrase keeps failing closed — set the Secret to
+   that passphrase or delete `<workspaces>/.provider-homes/aws-sso/secure/` on
+   the PVC and re-login.
+
+`AWS_SSO_FILE_PASSWORD` unset is not a boot failure: boot only reports it in the
+`aws auth:` line. Same risk note as the harness keys — every task inherits the
+passphrase and can read it from its own env; it protects the PVC cache at rest
+and is not an AWS credential.
 
 ### Egress control (not provided yet)
 

@@ -31,6 +31,10 @@ secrets/
     # GITHUB_USER
     # GITHUB_PASSWORD
     # GITHUB_HOST              # host for all GitHub tiers (default github.com)
+  aws-sso/          # only when `credential_process` profiles use aws-sso
+    AWS_SSO_FILE_PASSWORD    # passphrase for aws-sso's encrypted `file` SecureStore
+                             # (non-TTY agent `credential_process` unlocks it;
+                             #  see ../aws/README.md)
 ```
 
 GitHub tiers resolve **App > PAT > password** (first complete one wins; an
@@ -78,6 +82,11 @@ printf '%s' 'ghp_…'    > secrets/git/GITHUB_TOKEN
 # printf '%s' '123456'   > secrets/git/GITHUB_APP_ID
 # printf '%s' '12345678' > secrets/git/GITHUB_APP_INSTALLATION_ID
 # cp /path/to/app.private-key.pem secrets/git/GITHUB_APP_PRIVATE_KEY
+# Optional — aws-sso `credential_process` profiles (non-TTY SecureStore unlock):
+# mkdir -p secrets/aws-sso
+# printf '%s' "$AWS_SSO_FILE_PASSWORD" > secrets/aws-sso/AWS_SSO_FILE_PASSWORD
+# then uncomment the ./secrets/aws-sso mount + AWS_SSO_FILE_PASSWORD_FILE in
+# docker-compose.yml
 # Option C — GitHub Enterprise Server username + password (lowest priority):
 # printf '%s' 'ghe.example.com' > secrets/git/GITHUB_HOST
 # printf '%s' 'agent'           > secrets/git/GITHUB_USER
