@@ -61,5 +61,43 @@ else
   log "AWS profiles: no ConfigMap mounts at $AWS_CONFIG_SRC / $AWS_SSO_CONFIG_SRC — continuing without AWS"
 fi
 
+# ── aws-sso auth workflow: report the effective value, warn when unpinned ──
+# aws-sso >= 2.2.0 defaults to the PKCE workflow. PKCE waits for the browser to
+# redirect to a loopback listener (127.0.0.1:<port>) inside THIS pod's network
+# namespace, which an operator browser outside the cluster can never reach, so
+# `aws-sso login` hangs and no session is cached. The only fix is a TOP-LEVEL
+# `AuthWorkflow: device_code` in the file aws-sso actually reads.
+#
+# That pin is consumer config (ConfigMap), not something this image ships: an
+# overlay whose config.yaml was copied before the pin existed reproduces the
+# hang on any image, including a current release. So report what is effective at
+# boot — answerable from `kubectl logs` without shelling into the pod — and name
+# the two silent ways it gets lost (wrong nesting, legacy config dir).
+aws_sso_conf="${AWS_SSO_CONFIG:-$HOME/.config/aws-sso/config.yaml}"
+if [ -f "$aws_sso_conf" ]; then
+  _workflow="$(sed -n 's/^AuthWorkflow:[[:space:]]*\([^[:space:]#]*\).*/\1/p' "$aws_sso_conf" | head -1)"
+  case "$_workflow" in
+    device_code)
+      log "aws-sso config: AuthWorkflow=device_code (top level of $aws_sso_conf)"
+      ;;
+    "")
+      if grep -qE '^[[:space:]]+AuthWorkflow:' "$aws_sso_conf"; then
+        log "WARN: aws-sso config: AuthWorkflow is INDENTED in $aws_sso_conf (nested under a block such as SSOConfig). aws-sso reads it only at the TOP LEVEL, so it is ignored and login falls back to pkce — which cannot complete from 'kubectl exec' (its 127.0.0.1 callback is inside the pod). Move the line to the top level of the aws-sso ConfigMap and restart the pod."
+      else
+        log "WARN: aws-sso config: no 'AuthWorkflow: device_code' in $aws_sso_conf. aws-sso >= 2.2.0 then defaults to pkce, whose 127.0.0.1 callback an operator browser outside the pod cannot reach: 'aws-sso login' hangs and no session is cached. Add 'AuthWorkflow: device_code' at the TOP LEVEL of the aws-sso ConfigMap and restart the pod."
+      fi
+      ;;
+    *)
+      log "WARN: aws-sso config: AuthWorkflow=$_workflow in $aws_sso_conf. Only device_code works from 'kubectl exec' in this image; pkce waits on a 127.0.0.1 callback inside the pod. Ignore this if you deliberately port-forward that callback."
+      ;;
+  esac
+  unset _workflow
+fi
+# aws-sso prefers the legacy ~/.aws-sso directory over ~/.config/aws-sso when it
+# exists, so a stray copy there silently wins over the linked ConfigMap file.
+if [ -d "${HOME}/.aws-sso" ]; then
+  log "WARN: ${HOME}/.aws-sso exists and aws-sso prefers it over ${HOME}/.config/aws-sso — the ConfigMap-linked config.yaml is being IGNORED. Remove that directory and restart the pod."
+fi
+
 # Fail closed for accidental defaults: never export a profile from the entrypoint.
 unset AWS_PROFILE || true

@@ -33,6 +33,52 @@ operator topology, not a taste preference.
 Upstream's valid values are `device_code` and `pkce`. There is no
 `authorization_code` value — `pkce` is that flow.
 
+### The pin is consumer config, not image code
+
+The image does **not** ship an aws-sso `config.yaml`. It links whatever the
+cluster gives it:
+
+```
+ConfigMap `…-aws-sso` → /run/config/aws-sso/config.yaml (subPath)
+   → <workspaces>/.provider-homes/aws-sso/config.yaml
+   → ~/.config/aws-sso/config.yaml          ← the file aws-sso reads
+```
+
+Consequences worth knowing before debugging a hang:
+
+- **Releasing a new image does not change the pin.** A ConfigMap copied before
+  `AuthWorkflow: device_code` existed keeps producing the pkce URL on any
+  release, including the newest. Verified: image `v0.5.1` + a pre-pin ConfigMap
+  prints `…/authorize?…redirect_uri=http%3A%2F%2F127.0.0.1%3A<port>`; the same
+  image with the pinned ConfigMap prints the device URL.
+- **`subPath` ConfigMap mounts do not update in place.** Editing the ConfigMap is
+  not enough — delete/restart the pod, then confirm from the boot log.
+- Boot now reports the value it actually linked, so this is answerable from
+  `kubectl logs` without exec:
+
+```text
+aws-sso config: AuthWorkflow=device_code (top level of /home/agent/.config/aws-sso/config.yaml)
+WARN: aws-sso config: no 'AuthWorkflow: device_code' in … (aws-sso >= 2.2.0 defaults to pkce …)
+WARN: aws-sso config: AuthWorkflow is INDENTED in … (nested under a block such as SSOConfig)
+WARN: /home/agent/.aws-sso exists and aws-sso prefers it over /home/agent/.config/aws-sso …
+```
+
+### Precedence: what can override the pin
+
+Verified against aws-sso 2.4.0 (`internal/config/config.go`, `cmd/aws-sso/main.go`):
+
+| Rule | Effect |
+| --- | --- |
+| `--config <path>` / `AWS_SSO_CONFIG` env | Explicit file wins over everything below. Not set by this image; don't set it unless you mean it. |
+| `~/.aws-sso/` **directory** existing | Overrides `~/.config/aws-sso` entirely. A stray directory (e.g. left by hand-debugging) silently makes the ConfigMap config unused. Boot warns. |
+| `XDG_CONFIG_HOME` | If set, config dir becomes `$XDG_CONFIG_HOME/aws-sso`. Not set in this image. |
+| `AuthWorkflow` nested under `SSOConfig: <name>:` | **Ignored.** aws-sso reads `AuthWorkflow` only at the top level (the per-SSO field is not config-settable). A hand-edited pin in the wrong place silently does nothing. Boot warns. |
+| Environment variable for the workflow | None exists in 2.4.0 — config file only. |
+
+For the operator: if the URL contains `redirect_uri=http%3A%2F%2F127.0.0.1%3A<port>`
+and `code_challenge=`, the effective config has no usable pin. Check the boot
+`aws-sso config:` line, then the ConfigMap.
+
 Bumping the pinned `AWS_SSO_VERSION` re-opens this: a version bump that changes
 an auth default must not be merged without re-checking that `AuthWorkflow` is
 still pinned. `test/unit/aws-sso-config.sh` fails if either config stub loses

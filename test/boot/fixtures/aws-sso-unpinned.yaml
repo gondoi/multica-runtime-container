@@ -1,0 +1,13 @@
+# Fixture: an aws-sso config with NO top-level `AuthWorkflow` pin — the shape a
+# consumer ConfigMap has when it was copied before the pin existed. Boot must
+# warn loudly (aws-sso >= 2.2.0 then defaults to pkce, which cannot complete
+# from `kubectl exec`).
+SSOConfig:
+    Default:
+        SSORegion: us-east-1
+        StartUrl: https://my-org.awsapps.com/start
+ConsoleDuration: 720
+CacheRefresh: 168
+UrlAction: print
+LogLevel: error
+SecureStore: file

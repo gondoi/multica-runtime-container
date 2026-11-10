@@ -50,6 +50,7 @@ cname_codexproj=""
 cname_machine=""
 cname_nolog=""
 cname_wedged=""
+cname_awsnopin=""
 cname_egress=""
 cname_both=""
 
@@ -70,6 +71,7 @@ cleanup() {
   [ -n "$cname_codexproj" ] && docker rm -f "$cname_codexproj" >/dev/null 2>&1 || true
   [ -n "$cname_nolog" ] && docker rm -f "$cname_nolog" >/dev/null 2>&1 || true
   [ -n "$cname_wedged" ] && docker rm -f "$cname_wedged" >/dev/null 2>&1 || true
+  [ -n "$cname_awsnopin" ] && docker rm -f "$cname_awsnopin" >/dev/null 2>&1 || true
   [ -n "$cname_egress" ] && docker rm -f "$cname_egress" >/dev/null 2>&1 || true
   [ -n "$cname_both" ] && docker rm -f "$cname_both" >/dev/null 2>&1 || true
 }
@@ -785,6 +787,15 @@ else
     /home/agent/workspaces/.provider-homes/aws-sso/config.yaml >&2 || true
 fi
 
+# Boot must state the AuthWorkflow in effect: that is what makes "is the pin
+# live in this pod?" answerable from `kubectl logs` alone, without exec.
+if docker logs "$cname_aws" 2>&1 | grep -q 'aws-sso config: AuthWorkflow=device_code'; then
+  ok "boot reports the effective aws-sso AuthWorkflow (device_code)"
+else
+  bad "boot did not report the effective aws-sso AuthWorkflow"
+  docker logs "$cname_aws" 2>&1 | grep 'aws-sso config' >&2 || true
+fi
+
 set +e
 docker exec "$cname_aws" aws-sso login --url-action=print >/tmp/multica-boot-aws-login.out 2>&1
 login_rc=$?
@@ -1013,6 +1024,32 @@ else
   ok "ready.sh not Ready while daemon status is 'stopped' (probe is not vacuous)"
 fi
 assert_stays_up "$cname_wedged" "daemon-alive-but-not-running survives (no CrashLoop)"
+
+# A consumer ConfigMap copied before the device_code pin existed reproduces the
+# operator-login hang on ANY image release — the pin is consumer config, not
+# code the image ships. Boot must say so out loud, and must still come up Ready
+# (warning, never a boot gate), or a stale overlay silently hangs login again.
+echo "==> Happy path — aws-sso ConfigMap without the device_code pin (warn, stay Ready)"
+cname_awsnopin="multica-boot-seam-awsnopin-$$"
+docker run -d --name "$cname_awsnopin" \
+  --env-file "$FIX/happy-projected.env" \
+  -e AWS_SSO_FILE_PASSWORD=boot-seam-fake-passphrase \
+  -v "$STUB:/usr/local/bin/multica:ro" \
+  -v "$SECRETS/multica-home:/run/secrets/multica-home:ro" \
+  -v "$SECRETS/cursor:/run/secrets/cursor:ro" \
+  -v "$SECRETS/git:/run/secrets/git:ro" \
+  -v "$AWS_EX/config:/run/config/aws/config:ro" \
+  -v "$FIX/aws-sso-unpinned.yaml:/run/config/aws-sso/config.yaml:ro" \
+  "$IMAGE" >/dev/null
+
+assert_ready_container "$cname_awsnopin" "happy/aws-unpinned Ready"
+
+if docker logs "$cname_awsnopin" 2>&1 | grep -q "no 'AuthWorkflow: device_code'"; then
+  ok "unpinned aws-sso ConfigMap warns (pkce default → login hangs)"
+else
+  bad "unpinned aws-sso ConfigMap produced no warning"
+  docker logs "$cname_awsnopin" 2>&1 | grep -i 'aws-sso config' >&2 || true
+fi
 
 cleanup
 trap - EXIT

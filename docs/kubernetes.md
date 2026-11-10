@@ -199,6 +199,15 @@ their own browser, and `aws-sso` polls for the token — no inbound reachability
 
 Symptom of a missing pin: the printed URL contains
 `redirect_uri=http%3A%2F%2F127.0.0.1%3A<port>` and the command never returns.
+
+The pin lives in **your** ConfigMap, not in the image: a new image release does
+not add it. `subPath` ConfigMap mounts also do not refresh in place, so after
+editing the ConfigMap delete the pod and confirm from the boot log:
+`aws-sso config: AuthWorkflow=device_code`, or the `WARN` that names a missing /
+misplaced pin. Two silent overrides to know: a legacy `~/.aws-sso` directory
+shadows `~/.config/aws-sso`, and `AuthWorkflow` nested under `SSOConfig` is
+ignored (top level only). Full precedence table:
+[`examples/aws/README.md`](../examples/aws/README.md).
 Valid upstream values are `device_code` and `pkce` (there is no
 `authorization_code`). Keep the pin when you bump `AWS_SSO_VERSION`: before 2.4.0
 the `device_code` workflow also got no refresh token, so a session died after 8
