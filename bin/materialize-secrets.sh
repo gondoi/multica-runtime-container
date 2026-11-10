@@ -25,7 +25,10 @@
 #   ${GITHUB_APP_ID_FILE:-/run/secrets/git/GITHUB_APP_ID}
 #   ${GITHUB_APP_INSTALLATION_ID_FILE:-/run/secrets/git/GITHUB_APP_INSTALLATION_ID}
 #   ${GITHUB_APP_PRIVATE_KEY_FILE:-/run/secrets/git/GITHUB_APP_PRIVATE_KEY}
-#   ${AWS_SSO_FILE_PASSWORD_FILE:-/run/secrets/aws-sso/AWS_SSO_FILE_PASSWORD}
+#   ${MULTICA_AWS_SSO_PASSPHRASE_FILE:-/run/secrets/aws-sso/AWS_SSO_FILE_PASSWORD}
+#
+# aws-sso's own AWS_SSO_FILE_PASSWORD may also be supplied directly (Secret via
+# secretKeyRef, compose env); it wins over the file and is not read here.
 #
 # Env vars already set win over files. Exit 1 on unrecoverable misconfig.
 set -euo pipefail
@@ -137,17 +140,57 @@ fi
 # Always export file path for mint script (file mount preferred over env echo).
 export GITHUB_APP_PRIVATE_KEY_FILE="${GITHUB_APP_PRIVATE_KEY_FILE:-/run/secrets/git/GITHUB_APP_PRIVATE_KEY}"
 
-# ── aws-sso SecureStore passphrase (file backend unlock) ──────────────────
+# ── aws-sso SecureStore passphrase (file-backend unlock) ──────────────────
 # aws-sso's `file` SecureStore encrypts the token/role cache with a passphrase
 # and asks for it on every process that opens the store. Agent tasks have no
 # TTY, so `credential_process` (`aws-sso process`) can only unlock it
-# non-interactively from AWS_SSO_FILE_PASSWORD — the upstream-documented env var
-# (aws-sso-cli 2.1.0: internal/storage/keyring.go, `fileKeyringPassword`).
-# Optional: unset keeps the previous fail-closed behavior (agents see
-# "Enter passphrase to unlock …" then "Must run `aws-sso login`"). The value is
-# never logged and is inherited by tasks like the other provider secrets.
-read_secret_file AWS_SSO_FILE_PASSWORD \
-  "${AWS_SSO_FILE_PASSWORD_FILE:-/run/secrets/aws-sso/AWS_SSO_FILE_PASSWORD}"
+# non-interactively from AWS_SSO_FILE_PASSWORD — aws-sso's OWN variable, read by
+# its `fileKeyringPassword` before any prompt.
+#
+# Two ways to get it there, in precedence order:
+#   1. Set AWS_SSO_FILE_PASSWORD directly (Kubernetes Secret via secretKeyRef, or
+#      compose environment). Preferred: it lands in the pod's env, so every
+#      process inherits it — the daemon, every task it spawns, AND an interactive
+#      `kubectl exec` operator login (which then needs no passphrase prompt).
+#   2. Mount the passphrase in a file and point MULTICA_AWS_SSO_PASSPHRASE_FILE at
+#      it (default /run/secrets/aws-sso/AWS_SSO_FILE_PASSWORD). The value is then
+#      exported into the daemon env only: tasks inherit it, but a later
+#      `kubectl exec` session does NOT — an operator login run that way prompts
+#      for the passphrase and must type the same value, or the store diverges
+#      from the Secret and agents start failing closed again.
+#
+# The two names are deliberately different in shape: AWS_SSO_FILE_PASSWORD is the
+# SECRET ITSELF (aws-sso's variable, no `_FILE` suffix);
+# MULTICA_AWS_SSO_PASSPHRASE_FILE is a PATH TO A FILE that contains it. The old,
+# easily-confused AWS_SSO_FILE_PASSWORD_FILE is still honoured as a deprecated
+# alias of the latter (boot warns). Optional: unset keeps the previous
+# fail-closed behavior (agents see "Enter passphrase to unlock …" then
+# "Must run `aws-sso login`"). The value is never logged.
+MULTICA_AWS_SSO_PASSPHRASE_SOURCE=""
+if [ -n "${AWS_SSO_FILE_PASSWORD:-}" ]; then
+  MULTICA_AWS_SSO_PASSPHRASE_SOURCE="env"
+else
+  if [ -n "${AWS_SSO_FILE_PASSWORD_FILE:-}" ] \
+    && [ -z "${MULTICA_AWS_SSO_PASSPHRASE_FILE:-}" ]; then
+    log "WARN: AWS_SSO_FILE_PASSWORD_FILE is deprecated and easily confused with the passphrase variable AWS_SSO_FILE_PASSWORD — use MULTICA_AWS_SSO_PASSPHRASE_FILE for the file path (same value)."
+    MULTICA_AWS_SSO_PASSPHRASE_FILE="$AWS_SSO_FILE_PASSWORD_FILE"
+  fi
+  _aws_sso_pw_file_set=0
+  if [ -n "${MULTICA_AWS_SSO_PASSPHRASE_FILE:-}" ]; then
+    _aws_sso_pw_file_set=1
+  fi
+  MULTICA_AWS_SSO_PASSPHRASE_FILE="${MULTICA_AWS_SSO_PASSPHRASE_FILE:-/run/secrets/aws-sso/AWS_SSO_FILE_PASSWORD}"
+  read_secret_file AWS_SSO_FILE_PASSWORD "$MULTICA_AWS_SSO_PASSPHRASE_FILE"
+  if [ -n "${AWS_SSO_FILE_PASSWORD:-}" ]; then
+    MULTICA_AWS_SSO_PASSPHRASE_SOURCE="file:$MULTICA_AWS_SSO_PASSPHRASE_FILE"
+  elif [ "$_aws_sso_pw_file_set" = 1 ]; then
+    # Explicitly configured but unreadable/empty: name it, or the symptom looks
+    # like the variable was ignored.
+    log "WARN: MULTICA_AWS_SSO_PASSPHRASE_FILE=$MULTICA_AWS_SSO_PASSPHRASE_FILE is missing or empty — aws-sso credential_process will fail with the passphrase prompt"
+  fi
+  unset _aws_sso_pw_file_set
+fi
+export MULTICA_AWS_SSO_PASSPHRASE_SOURCE
 
 # Persist daemon.id into Multica home when only env provided (compose convenience).
 if [ ! -f "$MULTICA_HOME/daemon.id" ] && [ -n "${MULTICA_DAEMON_ID:-}" ]; then

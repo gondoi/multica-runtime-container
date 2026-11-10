@@ -11,6 +11,8 @@
 #   printf '%s' "$OPENAI_API_KEY" > secrets/codex/OPENAI_API_KEY
 #   printf '%s' "$GITHUB_TOKEN"   > secrets/git/GITHUB_TOKEN
 #   # optional aws-sso profiles: SecureStore passphrase for non-TTY tasks
+#   # (either export AWS_SSO_FILE_PASSWORD in .env, or write it to the file below
+#   #  and set MULTICA_AWS_SSO_PASSPHRASE_FILE)
 #   mkdir -p secrets/aws-sso
 #   printf '%s' "$AWS_SSO_FILE_PASSWORD" > secrets/aws-sso/AWS_SSO_FILE_PASSWORD
 #   # optional: still use .env for non-secret knobs (URLs, workspace id)
@@ -78,10 +80,17 @@ services:
       # AWS_SHARED_CREDENTIALS_FILE: /run/secrets/aws/credentials
       # aws-sso SecureStore passphrase (Identity Center profiles). aws-sso's
       # encrypted `file` store asks for a passphrase on every process that opens
-      # it; agent tasks have no TTY, so `credential_process` needs this env var
-      # (upstream-documented) or it fails with "Enter passphrase to unlock …" /
-      # "Must run `aws-sso login`". Uncomment with the secrets/aws-sso mount.
-      # AWS_SSO_FILE_PASSWORD_FILE: /run/secrets/aws-sso/AWS_SSO_FILE_PASSWORD
+      # it; agent tasks have no TTY, so `credential_process` needs
+      # AWS_SSO_FILE_PASSWORD or it fails with "Enter passphrase to unlock …" /
+      # "Must run `aws-sso login`".
+      #
+      # Two wirings — do not confuse the names:
+      #   AWS_SSO_FILE_PASSWORD             the PASSPHRASE itself (aws-sso's var)
+      #   MULTICA_AWS_SSO_PASSPHRASE_FILE   a PATH to a file holding it
+      # Uncomment exactly one. The passphrase itself can come from .env
+      # (environment) or the file mount below;
+      # AWS_SSO_FILE_PASSWORD_FILE is the old, deprecated name for the path.
+      # AWS_SSO_FILE_PASSWORD: ${AWS_SSO_FILE_PASSWORD:-}
     volumes:
       # Workspaces PVC role: .repos bare cache, task worktrees, asdf data, provider homes.
       - multica-workspaces:/home/agent/workspaces
@@ -93,8 +102,11 @@ services:
       - ./secrets/git:/run/secrets/git:ro
       # Optional — AWS auth tier 3 static keys (mounted config/credentials).
       # - ./secrets/aws:/run/secrets/aws:ro
-      # Optional — aws-sso SecureStore passphrase (one line, no trailing newline
-      # needed). Uncomment both this mount and AWS_SSO_FILE_PASSWORD_FILE above.
+      # Optional — aws-sso passphrase as a FILE (alternative to the
+      # AWS_SSO_FILE_PASSWORD environment variable above). The file is named
+      # AWS_SSO_FILE_PASSWORD because that is the passphrase; the variable you
+      # uncomment to point at it ends in _FILE. Uncomment both lines.
+      # MULTICA_AWS_SSO_PASSPHRASE_FILE: /run/secrets/aws-sso/AWS_SSO_FILE_PASSWORD
       # - ./secrets/aws-sso:/run/secrets/aws-sso:ro
       # AWS ConfigMap / aws-sso parity (generic stubs; override for private allowlist).
       - ./examples/aws/config:/run/config/aws/config:ro
