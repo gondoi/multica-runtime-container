@@ -56,6 +56,10 @@ base="$(git rev-parse HEAD)"
 echo "==> valid subjects"
 commit "feat(ci): add release-please config"
 commit "fix: gate non-conventional commit subjects"
+# Renovate's bump subjects (see docs/dependency-updates.md): these must stay
+# accepted, they are the input that has to trigger a Release Please release.
+commit "fix(deps): update dependency multica-ai/multica to v0.8.2"
+commit "fix(deps): update actions/checkout action to v7"
 commit "chore(main)!: drop sha image tags"
 commit 'Revert "feat: throwaway experiment"'
 expect_rc 0 "valid type/scope/breaking/revert subjects pass" "$base..HEAD"

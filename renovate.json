@@ -1,9 +1,17 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
+  "semanticCommits": "enabled",
   "dependencyDashboard": true,
   "dependencyDashboardHeader": "Non-GitHub pins (Claude Code CLI, cursor-agent, AWS CLI v2) are tracked through custom datasources; the Debian base image is digest-pinned and the FuelLabs reusable workflow is tracked by branch digest. Sources and manual check commands: `docs/dependency-updates.md`.",
   "automerge": false,
+  "packageRules": [
+    {
+      "description": "Every pin tracked here is part of the image this repo publishes, so a bump is a release-triggering `fix`, not a silent `chore`. A top-level `semanticCommitType` cannot express that: `config:recommended` extends `:semanticPrefixFixDepsChoreOthers`, whose `matchPackageNames: [\"*\"]` rule sets `chore` for dependencies with no package-manager depType, and package rules are applied after top-level config. This rule is appended after the preset's, so it wins for every manager (regex custom managers, `github-actions`, `dockerfile`, `git-refs`).",
+      "matchPackageNames": ["*"],
+      "semanticCommitType": "fix"
+    }
+  ],
   "customDatasources": {
     "claude-code-releases": {
       "description": "Claude Code CLI: downloads.claude.ai serves the newest published version as a plain-text body at /latest.",
