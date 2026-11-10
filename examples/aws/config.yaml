@@ -1,6 +1,21 @@
 # Generic aws-sso (synfinatic) config stub.
-# Replace StartUrl via consumer ConfigMap. UrlAction=print so operator-exec
-# login can paste the Identity Center URL without a browser in the pod.
+# Replace StartUrl via consumer ConfigMap.
+#
+# UrlAction=print: print the Identity Center URL instead of launching a browser —
+# there is no browser in the pod.
+# AuthWorkflow: device_code is REQUIRED here, not a preference. Login runs inside
+# the pod (kubectl exec -it / docker compose exec) while the browser runs on the
+# operator's machine. aws-sso >= 2.2.0 defaults to `pkce`, which binds a loopback
+# callback listener (127.0.0.1:<port>) in the pod's network namespace and waits for
+# the browser to redirect to it — a browser outside the cluster never reaches that
+# port, so login hangs and no session is ever cached. (PKCE became the default in
+# aws-sso-cli v2.2.0, upstream #1233.) The
+# `device_code` workflow prints a URL + user code, the operator approves it in
+# their own browser, and aws-sso polls for the token: no loopback needed, works
+# from any remote/headless host.
+# Valid values are `device_code` and `pkce` (there is no `authorization_code`
+# value; `pkce` is that OAuth flow). Pin it in a consumer overlay too, and keep it
+# pinned across aws-sso version bumps — see examples/aws/README.md.
 #
 # SSO token cache lives beside this file under the workspaces PVC
 # (.provider-homes/aws-sso/), not in this ConfigMap.
@@ -14,6 +29,7 @@
 # those calls unlock non-interactively after one operator login. Operator login
 # with the same env set creates/opens the store with that passphrase.
 SecureStore: file
+AuthWorkflow: device_code
 SSOConfig:
     Default:
         SSORegion: us-east-1

@@ -263,11 +263,12 @@ ssh://git@<host>/ → https://<host>/
 | ConfigMap / file | Mount path | Purpose |
 | --- | --- | --- |
 | `multica-runtime-aws` → `config` | `/run/config/aws/config` | Literal `~/.aws/config` (`credential_process` → `/usr/local/bin/aws-sso`) |
-| `multica-runtime-aws-sso` → `config.yaml` | `/run/config/aws-sso/config.yaml` | aws-sso StartUrl / UrlAction=print / profile format |
+| `multica-runtime-aws-sso` → `config.yaml` | `/run/config/aws-sso/config.yaml` | aws-sso StartUrl / UrlAction=print / `AuthWorkflow: device_code` / profile format |
 
 Entrypoint links those files into **workspaces PVC** provider homes (`.provider-homes/aws` and `.provider-homes/aws-sso`) so the SSO token cache survives recreate. Published examples ship **generic stubs** only — curated account allowlists stay in a private overlay.
 
 - **`AWS_PROFILE` unset** — callers pass `--profile` / `AWS_PROFILE` per command.
+- **Login workflow pinned to `device_code`.** aws-sso >= 2.2.0 defaults to `pkce`, which waits for the browser to redirect to a loopback listener (`127.0.0.1:<port>`) inside the pod's network namespace. The operator's browser runs outside the cluster, so that redirect never arrives, login hangs, and no session is cached. The example `config.yaml` therefore pins `AuthWorkflow: device_code` (prints a URL + user code, operator approves in their own browser — no inbound reachability). Valid upstream values are `device_code` and `pkce`; there is no `authorization_code` value. Re-check this pin on every `AWS_SSO_VERSION` bump: [`test/unit/aws-sso-config.sh`](test/unit/aws-sso-config.sh) and the boot seam guard it.
 - **SecureStore passphrase (`AWS_SSO_FILE_PASSWORD`) — required for agent tasks.** aws-sso's `file` SecureStore (the only backend available without a keyring daemon in the container) prompts for its passphrase on every process that opens it. An operator in `kubectl exec -it` / `docker compose exec` can type it; a non-TTY agent task running the profile's `credential_process` (`aws-sso process`) cannot, and fails with `Enter passphrase to unlock "…/secure"` then ``FATAL Must run `aws-sso login` before running `aws-sso process` ``. Boot therefore lifts the passphrase from a mounted Secret file into the upstream-documented `AWS_SSO_FILE_PASSWORD` env var:
 
 | Secret / file | Env var | Purpose |

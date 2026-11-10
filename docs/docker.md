@@ -244,6 +244,25 @@ docker compose exec -e AWS_SSO_OPERATOR_LOGIN=1 runtime \
 Agents must not run `aws-sso login` (guard exits non-zero without
 `AWS_SSO_OPERATOR_LOGIN=1`). SSO cache persists on the workspaces volume.
 
+The example `config.yaml` pins `AuthWorkflow: device_code`. aws-sso >= 2.2.0
+defaults to `pkce`, which binds a loopback callback (`127.0.0.1:<port>`) inside
+the container and waits for the browser to redirect to it — unreachable from an
+operator browser that is not inside that container, so login hangs and no session
+is cached. `device_code` prints a URL and user code instead:
+
+```text
+	Verify this code in your browser: ABCD-EFGH
+Please open the following URL in your browser:
+
+https://device.sso.us-east-1.amazonaws.com/?user_code=ABCD-EFGH
+```
+
+Valid upstream values are `device_code` and `pkce` (no `authorization_code`). A
+printed `https://oidc.<region>.amazonaws.com/authorize?…redirect_uri=http%3A%2F%2F127.0.0.1…`
+URL means the pin is missing and login will never complete. Session lifetime with
+`device_code` needs aws-sso >= 2.4.0, which is when that workflow started
+requesting a `refresh_token`.
+
 aws-sso's encrypted `file` SecureStore asks for its passphrase on every process
 that opens it. An agent task has no TTY, so `credential_process` can only unlock
 it from `AWS_SSO_FILE_PASSWORD` — mount that passphrase and the entrypoint

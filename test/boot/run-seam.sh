@@ -771,6 +771,18 @@ else
   docker exec "$cname_aws" ls -la /usr/local/bin/aws-sso /usr/local/libexec/aws-sso >&2 || true
 fi
 
+# The device_code pin must survive the ConfigMap → PVC link: pkce's loopback
+# callback is unreachable from the operator's browser, so losing the pin hangs
+# operator login (BOX-124 follow-on).
+if docker exec "$cname_aws" grep -qE '^[[:space:]]*AuthWorkflow:[[:space:]]*device_code' \
+  /home/agent/workspaces/.provider-homes/aws-sso/config.yaml; then
+  ok "aws-sso config pins AuthWorkflow: device_code in the linked config"
+else
+  bad "linked aws-sso config lost the AuthWorkflow: device_code pin"
+  docker exec "$cname_aws" sed -n '1,30p' \
+    /home/agent/workspaces/.provider-homes/aws-sso/config.yaml >&2 || true
+fi
+
 set +e
 docker exec "$cname_aws" aws-sso login --url-action=print >/tmp/multica-boot-aws-login.out 2>&1
 login_rc=$?
