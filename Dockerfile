@@ -50,7 +50,7 @@ ARG CODEX_PACKAGE_SHA256_LINUX_ARM64=0de261ecf1e7f3028a7952f03fca2093f749277d385
 # GitHub CLI (pinned). Installed as gh-real; /usr/local/bin/gh is bin/gh-wrapper.sh.
 ARG GH_VERSION=2.103.3
 # AWS CLI v2 (pinned). No baked-in credentials — see README AWS auth tiers.
-ARG AWS_CLI_VERSION=2.31.11
+ARG AWS_CLI_VERSION=2.40.0
 # Upstream synfinatic/aws-sso-cli (not fuel-internal -eks). Pin deliberately.
 ARG AWS_SSO_VERSION=2.1.0
 
