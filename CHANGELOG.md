@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.0](https://github.com/gondoi/multica-runtime-container/compare/v0.5.1...v0.6.0) (2026-11-10)
+
+
+### Features
+
+* **aws-sso:** report the effective AuthWorkflow at boot and warn when unpinned ([d28d548](https://github.com/gondoi/multica-runtime-container/commit/d28d54853684a9a268d2bcefa9ba9be9ebc3a0ed))
+
+
+### Bug Fixes
+
+* **aws-sso:** accept the passphrase straight from env, end the _FILE name clash ([bf47b8c](https://github.com/gondoi/multica-runtime-container/commit/bf47b8cab31497577055d6c3a45cdd16d86b1308))
+* **deps:** update dependency synfinatic/aws-sso-cli to v2.4.1 ([153565c](https://github.com/gondoi/multica-runtime-container/commit/153565c7851e67617b16baee359773ab52b7944d))
+* **deps:** update dependency synfinatic/aws-sso-cli to v2.4.1 ([27cbb14](https://github.com/gondoi/multica-runtime-container/commit/27cbb14aee8b7526517711ac94df66f542815c23))
+
 ## [0.5.1](https://github.com/gondoi/multica-runtime-container/compare/v0.5.0...v0.5.1) (2026-11-10)
 
 
