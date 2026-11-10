@@ -5,9 +5,13 @@ the digest-pinned base image) or in `.github/workflows/`. Renovate tracks those 
 from `renovate.json` and opens a bump PR for each one it can resolve. No auto-merge is
 configured: a bump only lands after review, `boot-seam.yml` (which builds the image)
 and `conventional-commits.yml` pass. Renovate PRs carry no tracker key — their subjects
-are `chore(deps): …` and a fixed key in `prTitle` would go stale — so bot work is
+are `fix(deps): …` and a fixed key in `prTitle` would go stale — so bot work is
 tracked through the Dependency Dashboard issue instead. Rollback of any bump is a
 revert of its PR.
+
+A bump is deliberately a `fix(deps):` commit and not Renovate's default `chore(deps):`,
+because a `chore` never ships: Release Please ignores it, no release PR appears, and no
+new image is published. See "How a bump ships" below.
 
 This page exists because some pins cannot be expressed as a plain `github-releases`
 lookup: three have no GitHub releases at all and use Renovate `customDatasources`
@@ -155,6 +159,65 @@ in the meantime.
   dependency's `internal-error` skip reason, so it disappears from the dashboard
   rather than warning. Confirm it is still listed after a config change.
 
+## How a bump ships
+
+The image is the deliverable, so a merged pin bump has to reach `ghcr.io` on its own,
+without waiting for an unrelated `feat`. Three pieces do that, and all three must stay
+in place:
+
+1. **Renovate writes a release-triggering subject.** `renovate.json` sets
+   `semanticCommits: "enabled"` and, in `packageRules`, `semanticCommitType: "fix"` for
+   every package. Every manager (the regex custom managers, `github-actions`,
+   `dockerfile`, `git-refs`) therefore produces `fix(deps): update …` as the commit
+   subject *and* the PR title.
+2. **Release Please.** Only `fix`, `feat` and breaking-change commits are releasable
+   (`release-please-config.json`, standard rule). A `fix` bumps the patch version, so a
+   bump PR merge opens or updates a release PR for the next `v0.X.Y`.
+3. **Publish.** Merging the release PR creates the `vX.Y.Z` tag. Tags created with
+   `GITHUB_TOKEN` do not start other workflows, so `release-please.yml` dispatches
+   `docker-publish.yml` on that tag explicitly.
+
+### Why the override is a `packageRules` entry and not `semanticCommitType`
+
+The obvious one-liner — a top-level `"semanticCommitType": "fix"` — does **not** work
+here, and it fails silently in the sense that PRs keep their old subject.
+`config:recommended` extends `:semanticPrefixFixDepsChoreOthers`, which contributes a
+`packageRules` entry matching every package name and setting `semanticCommitType:
+"chore"` for dependencies that have no package-manager `depType` (all of the pins here
+except the `github-actions` ones). Renovate applies `packageRules` *after* the top-level
+config, so the preset's rule wins over a top-level override. A repo-level `packageRules`
+entry is appended after the preset's and therefore wins for every manager.
+
+`:semanticCommitTypeAll(fix)` in `extends` is equivalent and also works (it expands to a
+`packageRules` entry with `matchFileNames: ["**/*"]`); the explicit rule here keeps the
+reason next to the config.
+
+`semanticCommits: "enabled"` is set explicitly because the default `auto` decides from
+the commit history whether semantic prefixes are used at all. Detection works today
+(every merged commit is conventional), but it is a heuristic: if it ever flipped to
+disabled, bump subjects would become `Update dependency …`, drop out of the changelog
+and fail `conventional-commits.yml`. Stating the intent keeps the guarantee.
+
+### Cadence: one release per bump (recorded decision)
+
+Grouping is **not** configured: each bump PR that merges becomes its own patch release
+and its own published image, which keeps bump-to-ship latency at "one review". The cost
+is more releases — every tracked pin can produce a few per week, plus a Debian base
+image digest release. If that becomes noisy, the switch is Renovate grouping plus a
+schedule, e.g.:
+
+```json
+"schedule": ["every weekend"],
+"packageRules": [{ "matchPackageNames": ["*"], "groupName": "all dependencies" }]
+```
+
+Several bumps then land in one PR and ship as a single release, trading latency for
+fewer releases. Until that is decided otherwise, keep per-bump releases.
+
+Note that a `chore:` commit on `main` still ships nothing on its own — that only
+matters for commits that change nothing the image contains (documentation, CI), which
+is the intended behaviour.
+
 ## Validate a config change
 
 Run from the repo root. The pinned Renovate image keeps the result independent of the
@@ -176,6 +239,28 @@ docker run --rm -v "$PWD":/usr/src/app -w /usr/src/app \
 
 A healthy run ends with `N flattened updates found: …` and no `Failed to look up`,
 `Invalid JSONata expression` or `Error while evaluating JSONata expression` warnings.
+
+### Proving the commit type
+
+`--dry-run=lookup` stops before branch generation, so it never prints the commit
+message. Use a full dry run at trace level and grep for `commitMessage`: it prints the
+exact subject Renovate would commit and use as the PR title. Downgrade a pin first in
+that copy, or there is no update to generate a message from.
+
+```bash
+docker run --rm -v "$PWD":/usr/src/app -w /usr/src/app \
+  -e GITHUB_TOKEN="$(gh auth token)" -e GITHUB_COM_TOKEN="$(gh auth token)" \
+  -e LOG_LEVEL=trace \
+  renovate/renovate:44.221.1 --platform=local --dry-run=full \
+  | grep -o 'commitMessage: ".*"' | sort -u
+```
+
+Expected, with `ARG MULTICA_VERSION` and `actions/checkout` both dropped one release:
+
+```text
+commitMessage: "fix(deps): update actions/checkout action to v7"
+commitMessage: "fix(deps): update dependency multica-ai/multica to v0.8.2"
+```
 Run it from a copy whose `.git` is a real directory (a `git` worktree's gitfile points
 outside the container mount and makes the `git-refs` lookup fail).
 
