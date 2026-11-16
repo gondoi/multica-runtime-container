@@ -32,7 +32,7 @@ ARG CURSOR_AGENT_PACKAGE_SHA256_LINUX_ARM64=131554bfdbf683d8ebfef83a2bb46ac4e5d0
 # verified against downloads.claude.ai's manifest. INSTALL_CLAUDE_CLI=false
 # produces a Cursor-only image (~330 MB smaller) for deployments that never run
 # the claude harness — the boot gate then rejects MULTICA_AGENT_CLI=claude.
-ARG CLAUDE_CODE_VERSION=2.1.322
+ARG CLAUDE_CODE_VERSION=2.1.325
 ARG INSTALL_CLAUDE_CLI=true
 # OpenAI Codex CLI (native Rust binary, no Node in the image). Pinned to a
 # github.com/openai/codex release tag and checksum-verified against the SHA-256
