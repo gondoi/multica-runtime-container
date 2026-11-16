@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.6.0](https://github.com/gondoi/multica-runtime-container/compare/v0.5.1...v0.6.0) (2026-11-16)
+
+
+### Features
+
+* **aws-sso:** report the effective AuthWorkflow at boot and warn when unpinned ([d28d548](https://github.com/gondoi/multica-runtime-container/commit/d28d54853684a9a268d2bcefa9ba9be9ebc3a0ed))
+
+
+### Bug Fixes
+
+* **aws-sso:** accept the passphrase straight from env, end the _FILE name clash ([bf47b8c](https://github.com/gondoi/multica-runtime-container/commit/bf47b8cab31497577055d6c3a45cdd16d86b1308))
+* **deps:** update dependency aws-cli-v2 to v2.40.3 ([f5a420c](https://github.com/gondoi/multica-runtime-container/commit/f5a420ce1ea5817ea8bdb2f996bc21193fa914ea))
+* **deps:** update dependency aws-cli-v2 to v2.40.3 ([fba2ead](https://github.com/gondoi/multica-runtime-container/commit/fba2ead080cec04dc84290b1ee9a67dfe1aa4d1b))
+* **deps:** update dependency claude-code-cli to v2.1.325 ([5e52f78](https://github.com/gondoi/multica-runtime-container/commit/5e52f784d647b5aa3dcd4e30c2b5e182eb724954))
+* **deps:** update dependency claude-code-cli to v2.1.325 ([af5d123](https://github.com/gondoi/multica-runtime-container/commit/af5d1234f5d3f0d453d8b754a0de8d64a3d85c4c))
+* **deps:** update dependency cli/cli to v2.104.0 ([d0d2457](https://github.com/gondoi/multica-runtime-container/commit/d0d245729e4bcc58e5930140c2333f4a61dd4dd0))
+* **deps:** update dependency cli/cli to v2.104.0 ([e6739b9](https://github.com/gondoi/multica-runtime-container/commit/e6739b9c276563573ec692e4e021499e6b8e1e97))
+* **deps:** update dependency cursor-agent-cli to v2026.11.13-eacade1 ([454d9ec](https://github.com/gondoi/multica-runtime-container/commit/454d9ec1a939c2e86937504005c1ff9cc5989d2d))
+* **deps:** update dependency cursor-agent-cli to v2026.11.13-eacade1 ([745831d](https://github.com/gondoi/multica-runtime-container/commit/745831d5c21df1d136b02b7f40a521e919df335c))
+* **deps:** update dependency multica-ai/multica to v0.9.0 ([a4f83e0](https://github.com/gondoi/multica-runtime-container/commit/a4f83e0f8b79a3e513919d641138699d5f82afb4))
+* **deps:** update dependency multica-ai/multica to v0.9.0 ([3e18090](https://github.com/gondoi/multica-runtime-container/commit/3e1809014a3fd7547e894e1103f68ada613c89ad))
+* **deps:** update dependency synfinatic/aws-sso-cli to v2.4.1 ([153565c](https://github.com/gondoi/multica-runtime-container/commit/153565c7851e67617b16baee359773ab52b7944d))
+* **deps:** update dependency synfinatic/aws-sso-cli to v2.4.1 ([27cbb14](https://github.com/gondoi/multica-runtime-container/commit/27cbb14aee8b7526517711ac94df66f542815c23))
+
 ## [0.5.1](https://github.com/gondoi/multica-runtime-container/compare/v0.5.0...v0.5.1) (2026-11-10)
 
 
