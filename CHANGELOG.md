@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.1](https://github.com/gondoi/multica-runtime-container/compare/v0.6.0...v0.6.1) (2026-11-20)
+
+
+### Bug Fixes
+
+* **deps:** update dependency aws-cli-v2 to v2.41.1 ([d832718](https://github.com/gondoi/multica-runtime-container/commit/d832718c2186530989995436023eaa8736502c09))
+* **deps:** update dependency aws-cli-v2 to v2.41.1 ([8746afd](https://github.com/gondoi/multica-runtime-container/commit/8746afd1c3a92059787d677712c9872c47766fd8))
+* **deps:** update dependency claude-code-cli to v2.1.328 ([23e7fa3](https://github.com/gondoi/multica-runtime-container/commit/23e7fa3953dc5534bd2482164046f4befa6a64d9))
+* **deps:** update dependency claude-code-cli to v2.1.328 ([06059a4](https://github.com/gondoi/multica-runtime-container/commit/06059a4feb6c8655e913d48b94da4125fc91dc16))
+* **deps:** update dependency cli/cli to v2.105.0 ([e5af0cb](https://github.com/gondoi/multica-runtime-container/commit/e5af0cb28e4a8aba1d76a02f1f5914a4960bc18c))
+* **deps:** update dependency cli/cli to v2.105.0 ([7cd9bbe](https://github.com/gondoi/multica-runtime-container/commit/7cd9bbe7462f42663bf529f94baef1501dc3f594))
+* **deps:** update dependency multica-ai/multica to v0.11.1 ([c7d54c5](https://github.com/gondoi/multica-runtime-container/commit/c7d54c515c8a89fe88d8b27dfa661bc47489e6b3))
+* **deps:** update dependency multica-ai/multica to v0.11.1 ([1bad3e9](https://github.com/gondoi/multica-runtime-container/commit/1bad3e962cedff0da849f1b6277eed7e3f503ec8))
+
 ## [0.6.0](https://github.com/gondoi/multica-runtime-container/compare/v0.5.1...v0.6.0) (2026-11-16)
 
 
